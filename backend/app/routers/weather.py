@@ -4,7 +4,7 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -54,13 +54,21 @@ def _round(value: float | None, digits: int) -> float | None:
 
 
 def _adjust_rain(value: float | None, baseline: float | None) -> float | None:
-    """The sensor reports lifetime cumulative rainfall; shift it to be relative
-    to the first-ever recorded value and never show it going negative (which
-    would happen if the sensor's counter itself got reset, e.g. new batteries).
+    """Shift the reset-aware rain total to be relative to the first-ever
+    recorded value, clamped so float noise can't show it going negative.
     """
     if value is None or baseline is None:
         return value
     return max(value - baseline, 0.0)
+
+
+def _rain_total(decoded: dict[str, Any]) -> float | None:
+    """rain_total_mm is the reset-aware running total (see RTL433Manager);
+    readings stored before that field existed fall back to the sensor's raw
+    cumulative value, which is equivalent since no reset had happened yet.
+    """
+    total = decoded.get("rain_total_mm")
+    return total if total is not None else decoded.get("rain_mm")
 
 
 def _build_history_point(row: aiosqlite.Row, rain_baseline: float | None) -> HistoryPoint:
@@ -93,7 +101,7 @@ async def get_latest(database: Database = Depends(get_database)) -> LatestReadin
         wind_dir_deg=decoded.get("wind_dir_deg"),
         wind_avg_km_h=decoded.get("wind_avg_km_h"),
         wind_max_km_h=decoded.get("wind_max_km_h"),
-        rain_mm=_round(_adjust_rain(decoded.get("rain_mm"), rain_baseline), 2),
+        rain_mm=_round(_adjust_rain(_rain_total(decoded), rain_baseline), 2),
         uv=decoded.get("uv"),
         uvi=decoded.get("uvi"),
         light_lux=decoded.get("light_lux"),
@@ -139,11 +147,11 @@ async def export_csv(
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(("timestamp", *_CANONICAL_FIELDS))
+    rain_index = _CANONICAL_FIELDS.index("rain_mm")
     for row in rows:
         decoded = json.loads(row["decoded_data"])
         values = [decoded.get(field) for field in _CANONICAL_FIELDS]
-        rain_index = _CANONICAL_FIELDS.index("rain_mm")
-        values[rain_index] = _round(_adjust_rain(values[rain_index], rain_baseline), 2)
+        values[rain_index] = _round(_adjust_rain(_rain_total(decoded), rain_baseline), 2)
         writer.writerow((row["timestamp"], *values))
     buffer.seek(0)
 
@@ -169,7 +177,7 @@ async def get_home_assistant_payload(database: Database = Depends(get_database))
         wind_dir_deg=decoded.get("wind_dir_deg"),
         wind_avg_km_h=decoded.get("wind_avg_km_h"),
         wind_max_km_h=decoded.get("wind_max_km_h"),
-        rain_mm=_round(_adjust_rain(decoded.get("rain_mm"), rain_baseline), 2),
+        rain_mm=_round(_adjust_rain(_rain_total(decoded), rain_baseline), 2),
         battery_ok=decoded.get("battery_ok"),
         updated_at=row["timestamp"],
     )

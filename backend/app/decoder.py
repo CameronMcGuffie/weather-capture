@@ -28,6 +28,29 @@ def decode_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return decoded
 
 
+_RAIN_RESET_EPSILON = 1e-6
+
+
+def compute_rain_total_mm(
+    current_raw_mm: float | None,
+    previous_raw_mm: float | None,
+    previous_total_mm: float | None,
+) -> float | None:
+    """Fold the sensor's cumulative rain counter into a total that survives
+    counter resets (e.g. new batteries make the sensor restart counting from
+    zero). Whenever the raw value drops instead of climbing, that drop is
+    treated as a reset and the prior total is carried forward rather than
+    letting the displayed total fall back down.
+    """
+    if current_raw_mm is None:
+        return None
+    if previous_raw_mm is None or previous_total_mm is None:
+        return current_raw_mm
+    if current_raw_mm + _RAIN_RESET_EPSILON < previous_raw_mm:
+        return previous_total_mm + current_raw_mm
+    return previous_total_mm + (current_raw_mm - previous_raw_mm)
+
+
 def parse_payload_timestamp(payload: dict[str, Any]) -> datetime:
     raw_time = payload.get("time")
     if isinstance(raw_time, str):

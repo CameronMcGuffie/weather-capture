@@ -9,7 +9,7 @@ from enum import Enum
 
 from app.config import Settings
 from app.database import Database
-from app.decoder import decode_payload, parse_payload_timestamp
+from app.decoder import compute_rain_total_mm, decode_payload, parse_payload_timestamp
 
 logger = logging.getLogger("weather.ingestion")
 
@@ -41,6 +41,8 @@ class RTL433Manager:
         self._task: asyncio.Task[None] | None = None
         self._stopping = False
         self.state = IngestionState()
+        self._last_rain_raw_mm: float | None = None
+        self._last_rain_total_mm: float | None = None
 
     def is_stale(self) -> bool:
         if self.state.last_reading_at is None:
@@ -50,6 +52,9 @@ class RTL433Manager:
 
     async def start(self) -> None:
         self._stopping = False
+        rain_state = await self._database.fetch_latest_rain_state()
+        if rain_state is not None:
+            self._last_rain_raw_mm, self._last_rain_total_mm = rain_state
         self._task = asyncio.create_task(self._run_forever(), name="rtl433-ingestion")
 
     async def stop(self) -> None:
@@ -124,4 +129,12 @@ class RTL433Manager:
         decoded = decode_payload(payload)
         timestamp = parse_payload_timestamp(payload)
         self.state.last_reading_at = datetime.now(timezone.utc)
+
+        current_rain_mm = decoded.get("rain_mm")
+        rain_total_mm = compute_rain_total_mm(current_rain_mm, self._last_rain_raw_mm, self._last_rain_total_mm)
+        if rain_total_mm is not None:
+            decoded["rain_total_mm"] = rain_total_mm
+            self._last_rain_raw_mm = current_rain_mm
+            self._last_rain_total_mm = rain_total_mm
+
         await self._database.insert_reading(timestamp, text, decoded)

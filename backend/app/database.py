@@ -18,6 +18,13 @@ CREATE INDEX IF NOT EXISTS idx_weather_readings_timestamp ON weather_readings (t
 """
 
 
+# rain_total_mm is a reset-aware running total computed at ingest time (see
+# RTL433Manager); older rows recorded before that existed fall back to the
+# sensor's raw cumulative value, which is equivalent as long as no reset had
+# happened yet.
+_RAIN_TOTAL_EXPR = "COALESCE(json_extract(decoded_data, '$.rain_total_mm'), json_extract(decoded_data, '$.rain_mm'))"
+
+
 def _aggregate_query(bucket_expr: str) -> str:
     return f"""
         SELECT
@@ -27,7 +34,7 @@ def _aggregate_query(bucket_expr: str) -> str:
             AVG(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h,
             MAX(json_extract(decoded_data, '$.wind_max_km_h')) AS wind_max_km_h,
             AVG(json_extract(decoded_data, '$.wind_dir_deg')) AS wind_dir_deg,
-            MAX(json_extract(decoded_data, '$.rain_mm')) AS rain_mm
+            MAX({_RAIN_TOTAL_EXPR}) AS rain_mm
         FROM weather_readings
         WHERE timestamp BETWEEN ? AND ?
         GROUP BY bucket
@@ -108,7 +115,7 @@ class Database:
             return self._rain_baseline_mm
 
         cursor = await self.connection.execute(
-            "SELECT json_extract(decoded_data, '$.rain_mm') AS rain_mm FROM weather_readings "
+            f"SELECT {_RAIN_TOTAL_EXPR} AS rain_mm FROM weather_readings "
             "WHERE json_extract(decoded_data, '$.rain_mm') IS NOT NULL "
             "ORDER BY timestamp ASC LIMIT 1"
         )
@@ -116,3 +123,18 @@ class Database:
         if row is not None and row["rain_mm"] is not None:
             self._rain_baseline_mm = float(row["rain_mm"])
         return self._rain_baseline_mm
+
+    async def fetch_latest_rain_state(self) -> tuple[float, float] | None:
+        """The (raw sensor value, reset-aware running total) of the most
+        recent reading, used to seed the ingestion manager's in-memory rain
+        tracking on startup so it continues correctly across restarts.
+        """
+        cursor = await self.connection.execute(
+            f"SELECT json_extract(decoded_data, '$.rain_mm') AS raw_rain, "
+            f"{_RAIN_TOTAL_EXPR} AS total_rain FROM weather_readings "
+            "ORDER BY timestamp DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None or row["raw_rain"] is None or row["total_rain"] is None:
+            return None
+        return float(row["raw_rain"]), float(row["total_rain"])
