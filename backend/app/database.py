@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS weather_readings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    raw_payload TEXT NOT NULL,
+    decoded_data JSON NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_weather_readings_timestamp ON weather_readings (timestamp);
+"""
+
+_AGGREGATE_COLUMNS = """
+    strftime('%Y-%m-%dT%H:00:00', timestamp) AS bucket,
+    AVG(json_extract(decoded_data, '$.temperature_c')) AS temperature_c,
+    AVG(json_extract(decoded_data, '$.humidity')) AS humidity,
+    AVG(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h,
+    MAX(json_extract(decoded_data, '$.wind_max_km_h')) AS wind_max_km_h,
+    AVG(json_extract(decoded_data, '$.wind_dir_deg')) AS wind_dir_deg,
+    MAX(json_extract(decoded_data, '$.rain_mm')) AS rain_mm
+"""
+
+
+class Database:
+    def __init__(self, database_path: str) -> None:
+        self._database_path = database_path
+        self._connection: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        Path(self._database_path).parent.mkdir(parents=True, exist_ok=True)
+        self._connection = await aiosqlite.connect(self._database_path)
+        self._connection.row_factory = aiosqlite.Row
+        # WAL lets the ingestion writer and API readers proceed concurrently
+        # without the dashboard blocking on the next incoming sensor reading.
+        await self._connection.execute("PRAGMA journal_mode=WAL;")
+        await self._connection.execute("PRAGMA synchronous=NORMAL;")
+        await self._connection.executescript(SCHEMA)
+        await self._connection.commit()
+
+    async def close(self) -> None:
+        if self._connection is not None:
+            await self._connection.close()
+            self._connection = None
+
+    @property
+    def connection(self) -> aiosqlite.Connection:
+        if self._connection is None:
+            raise RuntimeError("Database is not connected")
+        return self._connection
+
+    async def insert_reading(self, timestamp: datetime, raw_payload: str, decoded_data: dict[str, Any]) -> None:
+        await self.connection.execute(
+            "INSERT INTO weather_readings (timestamp, raw_payload, decoded_data) VALUES (?, ?, ?)",
+            (timestamp.isoformat(), raw_payload, json.dumps(decoded_data)),
+        )
+        await self.connection.commit()
+
+    async def fetch_latest(self) -> aiosqlite.Row | None:
+        cursor = await self.connection.execute(
+            "SELECT id, timestamp, raw_payload, decoded_data FROM weather_readings "
+            "ORDER BY timestamp DESC LIMIT 1"
+        )
+        return await cursor.fetchone()
+
+    async def fetch_raw_range(self, start: datetime, end: datetime) -> list[aiosqlite.Row]:
+        cursor = await self.connection.execute(
+            "SELECT timestamp, decoded_data FROM weather_readings "
+            "WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
+            (start.isoformat(), end.isoformat()),
+        )
+        return await cursor.fetchall()
+
+    async def fetch_hourly_aggregates(self, start: datetime, end: datetime) -> list[aiosqlite.Row]:
+        cursor = await self.connection.execute(
+            f"SELECT {_AGGREGATE_COLUMNS} FROM weather_readings "
+            "WHERE timestamp BETWEEN ? AND ? GROUP BY bucket ORDER BY bucket ASC",
+            (start.isoformat(), end.isoformat()),
+        )
+        return await cursor.fetchall()

@@ -1,0 +1,19 @@
+services:
+  weather-capture:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: weather-capture
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - weather-data:/data
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+
+volumes:
+  weather-data:

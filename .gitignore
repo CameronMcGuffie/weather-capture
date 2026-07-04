@@ -1,0 +1,25 @@
+## Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+*.pyc
+
+## Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+## Data & environment
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+
+## Editors / OS
+.vscode/
+.DS_Store
+
+## Claude Code (local tooling, not part of the app)
+.claude/
+CLAUDE.local.md
