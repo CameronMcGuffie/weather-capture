@@ -49,6 +49,49 @@ container's default user; if `rtl_433` keeps restarting with a "no supported
 devices found" or permission error, add `privileged: true` to the service in
 `docker-compose.yml`.
 
+## Deploying on Unraid from your own GitHub image
+
+Pushing to `main` triggers [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml),
+which builds the image and publishes it to GitHub Container Registry at
+`ghcr.io/cameronmcguffie/weather-capture:latest`. Unraid then just pulls that
+image — it never needs the source or a build step.
+
+**1. Make the package pullable.** The first push creates a package on your
+GitHub account under *Packages*. By default GHCR packages linked to a repo
+are private, and Unraid has no way to authenticate to GHCR out of the box, so
+either:
+
+- open the package's settings on GitHub and change its visibility to
+  **Public** (simplest), or
+- on the Unraid host, run `docker login ghcr.io -u CameronMcGuffie` with a
+  GitHub [personal access token](https://github.com/settings/tokens) that has
+  `read:packages` scope, so Unraid's Docker daemon can pull a private image.
+
+**2. Add the container.** Two ways to do it, pick whichever you already use:
+
+- *Native Docker UI* — Docker tab → **Add Container**, and fill in:
+
+  | Field | Value |
+  |---|---|
+  | Repository | `ghcr.io/cameronmcguffie/weather-capture:latest` |
+  | Network Type | `Bridge` |
+  | Port | Container `8000` → Host `8000` (or whatever's free) |
+  | Path | Container `/data` → Host `/mnt/user/appdata/weather-capture` |
+  | Extra Parameters | `--device=/dev/bus/usb:/dev/bus/usb` (add `--privileged` too if the dongle isn't detected) |
+
+  Add any of the environment variables from the Configuration table below as
+  extra config fields if you need to override a default.
+
+- *Compose Manager plugin* — point it at [docker-compose.unraid.yml](docker-compose.unraid.yml)
+  in this repo, which is the same as `docker-compose.yml` but pulls the GHCR
+  image instead of building locally, and maps `/data` to
+  `/mnt/user/appdata/weather-capture`. Adjust the image tag or the appdata
+  path if yours differs.
+
+**3. Update later.** Re-pushing to `main` publishes a new `:latest`; on
+Unraid just hit **Check for Updates** / **Force Update** on the container (or
+`docker compose pull && docker compose up -d` if you used Compose Manager).
+
 ## Configuration
 
 All settings can be overridden via a `.env` file (see `.env.example`) or by

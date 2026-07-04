@@ -1,0 +1,17 @@
+services:
+  weather-capture:
+    image: ghcr.io/cameronmcguffie/weather-capture:latest
+    container_name: weather-capture
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - /mnt/user/appdata/weather-capture:/data
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    # If rtl_433 can't see the dongle with just the device mapping above,
+    # uncomment the line below:
+    # privileged: true
