@@ -30,7 +30,7 @@ const RANGES: { key: RangeKey; label: string }[] = [
   { key: "custom", label: "Custom" },
 ];
 
-function formatTick(timestamp: string, resolution: "raw" | "hourly"): string {
+function formatTick(timestamp: string, resolution: "minute" | "hourly"): string {
   const date = new Date(timestamp);
   if (resolution === "hourly") {
     return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit" });
@@ -52,7 +52,7 @@ export function WeatherChart() {
   const [customEnd, setCustomEnd] = useState(isoDaysAgo(0));
 
   const [points, setPoints] = useState<HistoryPoint[]>([]);
-  const [resolution, setResolution] = useState<"raw" | "hourly">("raw");
+  const [resolution, setResolution] = useState<"minute" | "hourly">("minute");
   const [comparePoints, setComparePoints] = useState<{ current: HistoryPoint[]; previous: HistoryPoint[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
 
     static_dir: str = "/app/static"
 
+    log_level: str = "INFO"
+
     @property
     def database_dir(self) -> Path:
         return Path(self.database_path).parent

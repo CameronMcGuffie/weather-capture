@@ -15,3 +15,8 @@ services:
     # If rtl_433 can't see the dongle with just the device mapping above,
     # uncomment the line below:
     # privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -117,6 +117,10 @@ class RTL433Manager:
             logger.debug("discarding non-JSON rtl_433 line: %s", text)
             return
 
+        # Debug-only so it's off by default (LOG_LEVEL=debug to enable);
+        # every reading gets logged at INFO otherwise and floods the log.
+        logger.debug("rtl_433 raw: %s", text)
+
         decoded = decode_payload(payload)
         timestamp = parse_payload_timestamp(payload)
         self.state.last_reading_at = datetime.now(timezone.utc)

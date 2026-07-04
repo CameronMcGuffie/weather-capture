@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
@@ -48,6 +49,32 @@ def _resolve_span(
     return resolved_end - _RANGE_SPANS[range_key], resolved_end
 
 
+def _round(value: float | None, digits: int) -> float | None:
+    return None if value is None else round(value, digits)
+
+
+def _adjust_rain(value: float | None, baseline: float | None) -> float | None:
+    """The sensor reports lifetime cumulative rainfall; shift it to be relative
+    to the first-ever recorded value and never show it going negative (which
+    would happen if the sensor's counter itself got reset, e.g. new batteries).
+    """
+    if value is None or baseline is None:
+        return value
+    return max(value - baseline, 0.0)
+
+
+def _build_history_point(row: aiosqlite.Row, rain_baseline: float | None) -> HistoryPoint:
+    return HistoryPoint(
+        timestamp=row["bucket"],
+        temperature_c=_round(row["temperature_c"], 1),
+        humidity=_round(row["humidity"], 0),
+        wind_avg_km_h=_round(row["wind_avg_km_h"], 1),
+        wind_max_km_h=_round(row["wind_max_km_h"], 1),
+        wind_dir_deg=_round(row["wind_dir_deg"], 0),
+        rain_mm=_round(_adjust_rain(row["rain_mm"], rain_baseline), 2),
+    )
+
+
 @router.get("/latest", response_model=LatestReading)
 async def get_latest(database: Database = Depends(get_database)) -> LatestReading:
     row = await database.fetch_latest()
@@ -55,6 +82,7 @@ async def get_latest(database: Database = Depends(get_database)) -> LatestReadin
         raise HTTPException(status_code=404, detail="no readings recorded yet")
 
     decoded = json.loads(row["decoded_data"])
+    rain_baseline = await database.fetch_rain_baseline_mm()
     return LatestReading(
         timestamp=row["timestamp"],
         model=decoded.get("model"),
@@ -65,7 +93,7 @@ async def get_latest(database: Database = Depends(get_database)) -> LatestReadin
         wind_dir_deg=decoded.get("wind_dir_deg"),
         wind_avg_km_h=decoded.get("wind_avg_km_h"),
         wind_max_km_h=decoded.get("wind_max_km_h"),
-        rain_mm=decoded.get("rain_mm"),
+        rain_mm=_round(_adjust_rain(decoded.get("rain_mm"), rain_baseline), 2),
         uv=decoded.get("uv"),
         uvi=decoded.get("uvi"),
         light_lux=decoded.get("light_lux"),
@@ -80,40 +108,19 @@ async def get_history(
     database: Database = Depends(get_database),
 ) -> HistoryResponse:
     span_start, span_end = _resolve_span(range, start, end)
+    rain_baseline = await database.fetch_rain_baseline_mm()
 
     if span_end - span_start > timedelta(hours=24):
         rows = await database.fetch_hourly_aggregates(span_start, span_end)
-        points = [
-            HistoryPoint(
-                timestamp=row["bucket"],
-                temperature_c=row["temperature_c"],
-                humidity=row["humidity"],
-                wind_avg_km_h=row["wind_avg_km_h"],
-                wind_max_km_h=row["wind_max_km_h"],
-                wind_dir_deg=row["wind_dir_deg"],
-                rain_mm=row["rain_mm"],
-            )
-            for row in rows
-        ]
-        resolution: Literal["raw", "hourly"] = "hourly"
+        resolution: Literal["minute", "hourly"] = "hourly"
     else:
-        rows = await database.fetch_raw_range(span_start, span_end)
-        points = []
-        for row in rows:
-            decoded = json.loads(row["decoded_data"])
-            points.append(
-                HistoryPoint(
-                    timestamp=row["timestamp"],
-                    temperature_c=decoded.get("temperature_c"),
-                    humidity=decoded.get("humidity"),
-                    wind_avg_km_h=decoded.get("wind_avg_km_h"),
-                    wind_max_km_h=decoded.get("wind_max_km_h"),
-                    wind_dir_deg=decoded.get("wind_dir_deg"),
-                    rain_mm=decoded.get("rain_mm"),
-                )
-            )
-        resolution = "raw"
+        # The sensor transmits far more than once a minute, so even the
+        # finest-grained view is aggregated rather than plotting every raw
+        # reading (which would otherwise be noisy and needlessly dense).
+        rows = await database.fetch_minute_aggregates(span_start, span_end)
+        resolution = "minute"
 
+    points = [_build_history_point(row, rain_baseline) for row in rows]
     return HistoryResponse(resolution=resolution, start=span_start, end=span_end, points=points)
 
 
@@ -127,13 +134,17 @@ async def export_csv(
         raise HTTPException(status_code=400, detail="start must be before end")
 
     rows = await database.fetch_raw_range(start, end)
+    rain_baseline = await database.fetch_rain_baseline_mm()
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(("timestamp", *_CANONICAL_FIELDS))
     for row in rows:
         decoded = json.loads(row["decoded_data"])
-        writer.writerow((row["timestamp"], *(decoded.get(field) for field in _CANONICAL_FIELDS)))
+        values = [decoded.get(field) for field in _CANONICAL_FIELDS]
+        rain_index = _CANONICAL_FIELDS.index("rain_mm")
+        values[rain_index] = _round(_adjust_rain(values[rain_index], rain_baseline), 2)
+        writer.writerow((row["timestamp"], *values))
     buffer.seek(0)
 
     filename = f"weather-{start.date().isoformat()}-{end.date().isoformat()}.csv"
@@ -151,13 +162,14 @@ async def get_home_assistant_payload(database: Database = Depends(get_database))
         return HomeAssistantPayload()
 
     decoded = json.loads(row["decoded_data"])
+    rain_baseline = await database.fetch_rain_baseline_mm()
     return HomeAssistantPayload(
         temperature_c=decoded.get("temperature_c"),
         humidity=decoded.get("humidity"),
         wind_dir_deg=decoded.get("wind_dir_deg"),
         wind_avg_km_h=decoded.get("wind_avg_km_h"),
         wind_max_km_h=decoded.get("wind_max_km_h"),
-        rain_mm=decoded.get("rain_mm"),
+        rain_mm=_round(_adjust_rain(decoded.get("rain_mm"), rain_baseline), 2),
         battery_ok=decoded.get("battery_ok"),
         updated_at=row["timestamp"],
     )

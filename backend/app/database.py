@@ -17,21 +17,33 @@ CREATE TABLE IF NOT EXISTS weather_readings (
 CREATE INDEX IF NOT EXISTS idx_weather_readings_timestamp ON weather_readings (timestamp);
 """
 
-_AGGREGATE_COLUMNS = """
-    strftime('%Y-%m-%dT%H:00:00', timestamp) AS bucket,
-    AVG(json_extract(decoded_data, '$.temperature_c')) AS temperature_c,
-    AVG(json_extract(decoded_data, '$.humidity')) AS humidity,
-    AVG(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h,
-    MAX(json_extract(decoded_data, '$.wind_max_km_h')) AS wind_max_km_h,
-    AVG(json_extract(decoded_data, '$.wind_dir_deg')) AS wind_dir_deg,
-    MAX(json_extract(decoded_data, '$.rain_mm')) AS rain_mm
-"""
+
+def _aggregate_query(bucket_expr: str) -> str:
+    return f"""
+        SELECT
+            {bucket_expr} AS bucket,
+            AVG(json_extract(decoded_data, '$.temperature_c')) AS temperature_c,
+            AVG(json_extract(decoded_data, '$.humidity')) AS humidity,
+            AVG(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h,
+            MAX(json_extract(decoded_data, '$.wind_max_km_h')) AS wind_max_km_h,
+            AVG(json_extract(decoded_data, '$.wind_dir_deg')) AS wind_dir_deg,
+            MAX(json_extract(decoded_data, '$.rain_mm')) AS rain_mm
+        FROM weather_readings
+        WHERE timestamp BETWEEN ? AND ?
+        GROUP BY bucket
+        ORDER BY bucket ASC
+    """
+
+
+_MINUTE_QUERY = _aggregate_query("strftime('%Y-%m-%dT%H:%M:00', timestamp)")
+_HOURLY_QUERY = _aggregate_query("strftime('%Y-%m-%dT%H:00:00', timestamp)")
 
 
 class Database:
     def __init__(self, database_path: str) -> None:
         self._database_path = database_path
         self._connection: aiosqlite.Connection | None = None
+        self._rain_baseline_mm: float | None = None
 
     async def connect(self) -> None:
         Path(self._database_path).parent.mkdir(parents=True, exist_ok=True)
@@ -77,10 +89,30 @@ class Database:
         )
         return await cursor.fetchall()
 
-    async def fetch_hourly_aggregates(self, start: datetime, end: datetime) -> list[aiosqlite.Row]:
-        cursor = await self.connection.execute(
-            f"SELECT {_AGGREGATE_COLUMNS} FROM weather_readings "
-            "WHERE timestamp BETWEEN ? AND ? GROUP BY bucket ORDER BY bucket ASC",
-            (start.isoformat(), end.isoformat()),
-        )
+    async def fetch_minute_aggregates(self, start: datetime, end: datetime) -> list[aiosqlite.Row]:
+        cursor = await self.connection.execute(_MINUTE_QUERY, (start.isoformat(), end.isoformat()))
         return await cursor.fetchall()
+
+    async def fetch_hourly_aggregates(self, start: datetime, end: datetime) -> list[aiosqlite.Row]:
+        cursor = await self.connection.execute(_HOURLY_QUERY, (start.isoformat(), end.isoformat()))
+        return await cursor.fetchall()
+
+    async def fetch_rain_baseline_mm(self) -> float | None:
+        """The sensor reports lifetime cumulative rainfall, not a daily total.
+
+        The dashboard displays rain relative to the first-ever recorded
+        value so it reads sensibly instead of showing years of accumulation.
+        That first value never changes, so it's cached after the first hit.
+        """
+        if self._rain_baseline_mm is not None:
+            return self._rain_baseline_mm
+
+        cursor = await self.connection.execute(
+            "SELECT json_extract(decoded_data, '$.rain_mm') AS rain_mm FROM weather_readings "
+            "WHERE json_extract(decoded_data, '$.rain_mm') IS NOT NULL "
+            "ORDER BY timestamp ASC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is not None and row["rain_mm"] is not None:
+            self._rain_baseline_mm = float(row["rain_mm"])
+        return self._rain_baseline_mm

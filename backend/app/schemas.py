@@ -33,7 +33,7 @@ class HistoryPoint(BaseModel):
 
 
 class HistoryResponse(BaseModel):
-    resolution: Literal["raw", "hourly"]
+    resolution: Literal["minute", "hourly"]
     start: datetime
     end: datetime
     points: list[HistoryPoint]

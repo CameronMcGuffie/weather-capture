@@ -25,7 +25,7 @@ export interface HistoryPoint {
 }
 
 export interface HistoryResponse {
-  resolution: "raw" | "hourly";
+  resolution: "minute" | "hourly";
   start: string;
   end: string;
   points: HistoryPoint[];

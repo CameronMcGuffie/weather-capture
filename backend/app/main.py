@@ -15,7 +15,8 @@ from app.database import Database
 from app.ingestion import RTL433Manager
 from app.routers import status, weather
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+_log_level = getattr(logging, get_settings().log_level.upper(), logging.INFO)
+logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager
