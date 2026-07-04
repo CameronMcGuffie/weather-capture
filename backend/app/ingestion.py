@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ logger = logging.getLogger("weather.ingestion")
 # Defensive cap on a single rtl_433 output line; ordinary readings are a few
 # hundred bytes, so anything past this is discarded before it's even parsed.
 _MAX_LINE_LENGTH = 8192
+
+_WATCHDOG_POLL_SECONDS = 15.0
 
 
 def _reject_non_finite_constant(token: str) -> float:
@@ -106,15 +109,22 @@ class RTL433Manager:
 
                 assert self._process.stdout is not None
                 assert self._process.stderr is not None
-                # Both streams must be drained concurrently, not one after
-                # the other: rtl_433's own diagnostics (device detection,
-                # tuner info, errors) go to stderr, and if that pipe's buffer
-                # fills up while only stdout is being read, rtl_433 blocks on
-                # its next stderr write and silently hangs.
-                await asyncio.gather(
-                    self._consume_stdout(self._process.stdout),
-                    self._consume_stderr(self._process.stderr),
-                )
+                watchdog_task = asyncio.create_task(self._watch_for_stall())
+                try:
+                    # Both streams must be drained concurrently, not one
+                    # after the other: rtl_433's own diagnostics (device
+                    # detection, tuner info, errors) go to stderr, and if
+                    # that pipe's buffer fills up while only stdout is being
+                    # read, rtl_433 blocks on its next stderr write and
+                    # silently hangs.
+                    await asyncio.gather(
+                        self._consume_stdout(self._process.stdout),
+                        self._consume_stderr(self._process.stderr),
+                    )
+                finally:
+                    watchdog_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await watchdog_task
 
                 return_code = await self._process.wait()
                 self.state.last_error = f"rtl_433 exited with code {return_code}"
@@ -134,6 +144,32 @@ class RTL433Manager:
             backoff = min(backoff * 2, self._settings.max_restart_backoff_seconds)
 
         self.state.status = IngestionStatus.STOPPED
+
+    async def _watch_for_stall(self) -> None:
+        """rtl_433 can start and keep running without ever exiting even
+        though it failed to claim the USB dongle — most commonly right after
+        a redeploy, if the previous container's process hasn't released the
+        device yet. That leaves nothing to trigger the normal
+        crash-and-restart path, so this force-kills the process if too long
+        passes with no successful reading, letting the existing backoff loop
+        retry from a clean process (by which point the device is normally
+        free).
+        """
+        while True:
+            await asyncio.sleep(_WATCHDOG_POLL_SECONDS)
+            reference = self.state.last_reading_at or self.state.started_at
+            if reference is None:
+                continue
+            elapsed = (datetime.now(timezone.utc) - reference).total_seconds()
+            if elapsed > self._settings.watchdog_timeout_seconds:
+                logger.warning(
+                    "no rtl_433 reading in %.0fs (limit %.0fs); killing it to force a fresh retry",
+                    elapsed,
+                    self._settings.watchdog_timeout_seconds,
+                )
+                if self._process is not None and self._process.returncode is None:
+                    self._process.kill()
+                return
 
     async def _consume_stdout(self, stream: asyncio.StreamReader) -> None:
         async for line in stream:

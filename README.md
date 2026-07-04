@@ -109,6 +109,7 @@ match the verified WHx080 configuration.
 | `RESTART_BACKOFF_SECONDS`     | `5`                            | Initial delay before restarting a crashed `rtl_433`  |
 | `MAX_RESTART_BACKOFF_SECONDS` | `60`                           | Cap for the exponential backoff                      |
 | `STALE_READING_SECONDS`       | `180`                          | How long without a reading before status turns stale |
+| `WATCHDOG_TIMEOUT_SECONDS`    | `90`                           | Kill and retry `rtl_433` if no reading arrives in this long, even if it's still "running" |
 | `CORS_ORIGINS`                | `*`                            | Comma-separated allowed origins, or `*`               |
 | `SENSOR_MODEL_FILTER`         | `Fineoffset`                   | Only readings whose model name contains this are kept (empty = accept any) |
 | `SENSOR_ID_FILTER`            | *(unset)*                      | Optionally lock onto one physical sensor's id (see `sensor_id` in `/api/latest`) |
@@ -198,3 +199,12 @@ ingestion pipeline treats every line as untrusted:
 - **No reading can crash ingestion** — any unexpected failure while
   processing a single line is caught and logged; it's discarded without
   restarting the `rtl_433` subprocess.
+- **Stuck-but-still-running `rtl_433`** — normally a dead/crashed `rtl_433`
+  triggers the exponential-backoff restart loop, but it can also fail to
+  claim the USB dongle (most commonly right after a redeploy, before the
+  previous container's process has released it) without ever exiting on its
+  own. A watchdog kills and restarts it if no reading arrives within
+  `WATCHDOG_TIMEOUT_SECONDS`, regardless of whether the process technically
+  looks "running". `rtl_433`'s own stderr diagnostics (device detection,
+  tuner info, USB errors) are also logged at INFO, prefixed `rtl_433:`, so
+  you can see what it's actually doing.

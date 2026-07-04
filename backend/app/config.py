@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     max_restart_backoff_seconds: float = 60.0
     stale_reading_seconds: int = 180
 
+    # rtl_433 can start successfully but still fail to claim the USB dongle
+    # (e.g. the previous container's process hasn't released it yet right
+    # after a redeploy) without ever exiting on its own, so the normal
+    # crash-and-backoff restart never triggers. If no reading has arrived in
+    # this many seconds while otherwise "running", it's killed and restarted
+    # from scratch. Kept below stale_reading_seconds so this usually recovers
+    # before the dashboard even shows "Stale".
+    watchdog_timeout_seconds: float = 90.0
+
     static_dir: str = "/app/static"
 
     log_level: str = "INFO"
