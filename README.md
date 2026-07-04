@@ -110,6 +110,9 @@ match the verified WHx080 configuration.
 | `MAX_RESTART_BACKOFF_SECONDS` | `60`                           | Cap for the exponential backoff                      |
 | `STALE_READING_SECONDS`       | `180`                          | How long without a reading before status turns stale |
 | `CORS_ORIGINS`                | `*`                            | Comma-separated allowed origins, or `*`               |
+| `SENSOR_MODEL_FILTER`         | `Fineoffset`                   | Only readings whose model name contains this are kept (empty = accept any) |
+| `SENSOR_ID_FILTER`            | *(unset)*                      | Optionally lock onto one physical sensor's id (see `sensor_id` in `/api/latest`) |
+| `LOG_LEVEL`                   | `INFO`                         | Set to `DEBUG` to log every raw rtl_433 line          |
 | `WEB_PORT`                    | `8000`                         | Host port published by `docker-compose.yml`          |
 
 ## API
@@ -170,3 +173,28 @@ npm run dev
 
 SQLite runs in WAL mode so the ingestion writer and API reads don't block
 each other.
+
+## Ingestion resilience
+
+433MHz is unlicensed and unauthenticated — anything transmitting nearby (a
+neighbor's weather station, a car remote, a garage door, or deliberately
+crafted noise) can make `rtl_433` emit a line that looks like valid JSON. The
+ingestion pipeline treats every line as untrusted:
+
+- **Malformed input** — non-JSON lines, JSON that isn't an object (arrays,
+  bare numbers), and oversized lines (>8KB) are discarded before they're ever
+  parsed as a reading.
+- **Non-finite numbers** — `NaN`/`Infinity`/`-Infinity` tokens are technically
+  accepted by Python's JSON parser but aren't valid JSON and would break any
+  standards-compliant consumer (like the browser); these lines are rejected.
+- **Wrong device** — readings are matched against `SENSOR_MODEL_FILTER` (and
+  optionally `SENSOR_ID_FILTER`) before being stored, so a different 433MHz
+  device in range can't get mixed into this station's history. Rejected
+  readings are counted in `/api/status` as `ignored_count`.
+- **Implausible values** — even from the right device, each field is checked
+  against a physically plausible range (e.g. -50–60°C, 0–100% humidity); a
+  field outside that range is nulled rather than discarding the whole
+  reading, so one corrupted field doesn't cost an otherwise-good reading.
+- **No reading can crash ingestion** — any unexpected failure while
+  processing a single line is caught and logged; it's discarded without
+  restarting the `rtl_433` subprocess.

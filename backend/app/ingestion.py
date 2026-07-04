@@ -9,9 +9,26 @@ from enum import Enum
 
 from app.config import Settings
 from app.database import Database
-from app.decoder import compute_rain_total_mm, decode_payload, parse_payload_timestamp
+from app.decoder import (
+    compute_rain_total_mm,
+    decode_payload,
+    matches_expected_sensor,
+    parse_payload_timestamp,
+    sanitize_decoded,
+)
 
 logger = logging.getLogger("weather.ingestion")
+
+# Defensive cap on a single rtl_433 output line; ordinary readings are a few
+# hundred bytes, so anything past this is discarded before it's even parsed.
+_MAX_LINE_LENGTH = 8192
+
+
+def _reject_non_finite_constant(token: str) -> float:
+    # json.loads otherwise happily parses "NaN"/"Infinity"/"-Infinity" even
+    # though they aren't valid JSON, which would later break anything (like
+    # the browser) that parses this data with a standards-compliant parser.
+    raise ValueError(f"rejected non-finite JSON constant: {token}")
 
 
 class IngestionStatus(str, Enum):
@@ -29,6 +46,7 @@ class IngestionState:
     last_reading_at: datetime | None = None
     restart_count: int = 0
     last_error: str | None = None
+    ignored_count: int = 0
 
 
 class RTL433Manager:
@@ -116,25 +134,49 @@ class RTL433Manager:
             await self._handle_line(text)
 
     async def _handle_line(self, text: str) -> None:
+        # 433MHz is unlicensed and unauthenticated: a neighbor's sensor, an
+        # unrelated gadget, or deliberately crafted noise can all produce a
+        # line that looks plausible. Nothing below trusts it further than
+        # necessary, and no failure here is allowed to propagate up and
+        # force an unnecessary restart of an otherwise-healthy rtl_433.
+        if len(text) > _MAX_LINE_LENGTH:
+            logger.debug("discarding oversized rtl_433 line (%d bytes)", len(text))
+            return
+
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            logger.debug("discarding non-JSON rtl_433 line: %s", text)
+            payload = json.loads(text, parse_constant=_reject_non_finite_constant)
+        except ValueError:
+            # Covers malformed JSON and the NaN/Infinity rejection above.
+            logger.debug("discarding malformed rtl_433 line: %s", text)
+            return
+
+        if not isinstance(payload, dict):
+            logger.debug("discarding non-object rtl_433 line: %s", text)
             return
 
         # Debug-only so it's off by default (LOG_LEVEL=debug to enable);
         # every reading gets logged at INFO otherwise and floods the log.
         logger.debug("rtl_433 raw: %s", text)
 
-        decoded = decode_payload(payload)
-        timestamp = parse_payload_timestamp(payload)
+        if not matches_expected_sensor(payload, self._settings.sensor_model_filter, self._settings.sensor_id_filter):
+            self.state.ignored_count += 1
+            logger.debug("ignoring reading from an unexpected device: %s", text)
+            return
+
+        try:
+            decoded = sanitize_decoded(decode_payload(payload))
+            timestamp = parse_payload_timestamp(payload)
+
+            current_rain_mm = decoded.get("rain_mm")
+            rain_total_mm = compute_rain_total_mm(current_rain_mm, self._last_rain_raw_mm, self._last_rain_total_mm)
+            if rain_total_mm is not None:
+                decoded["rain_total_mm"] = rain_total_mm
+                self._last_rain_raw_mm = current_rain_mm
+                self._last_rain_total_mm = rain_total_mm
+
+            await self._database.insert_reading(timestamp, text, decoded)
+        except Exception as exc:  # a single bad reading must never crash ingestion
+            logger.warning("discarding a reading that failed to process: %s", exc)
+            return
+
         self.state.last_reading_at = datetime.now(timezone.utc)
-
-        current_rain_mm = decoded.get("rain_mm")
-        rain_total_mm = compute_rain_total_mm(current_rain_mm, self._last_rain_raw_mm, self._last_rain_total_mm)
-        if rain_total_mm is not None:
-            decoded["rain_total_mm"] = rain_total_mm
-            self._last_rain_raw_mm = current_rain_mm
-            self._last_rain_total_mm = rain_total_mm
-
-        await self._database.insert_reading(timestamp, text, decoded)

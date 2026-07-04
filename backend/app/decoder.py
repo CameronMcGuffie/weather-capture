@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
 _TIMESTAMP_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S")
+
+# 433MHz is unlicensed and unauthenticated: any transmitter in range (a
+# neighbor's sensor, a car remote, a garage door, deliberately crafted noise)
+# can produce a plausible-looking JSON line. These bounds are generous
+# physical limits, not calibration targets, so real weather never trips them.
+_FIELD_BOUNDS: dict[str, tuple[float, float]] = {
+    "temperature_c": (-50.0, 60.0),
+    "humidity": (0.0, 100.0),
+    "wind_dir_deg": (0.0, 360.0),
+    "wind_avg_km_h": (0.0, 250.0),
+    "wind_max_km_h": (0.0, 250.0),
+    "rain_mm": (0.0, 100_000.0),
+}
 
 
 def decode_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -26,6 +40,43 @@ def decode_payload(payload: dict[str, Any]) -> dict[str, Any]:
         decoded["temperature_c"] = decoded["temperature_C"]
 
     return decoded
+
+
+def _is_valid_number(value: Any) -> bool:
+    # bool is a subclass of int in Python, so isinstance(True, int) is True;
+    # excluded explicitly since a spoofed "humidity": true must not read as 1.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def sanitize_decoded(decoded: dict[str, Any]) -> dict[str, Any]:
+    """Null out any field that's wrongly typed, non-finite, or outside a
+    physically plausible range instead of discarding the whole reading —
+    a single corrupted field shouldn't cost the rest of an otherwise-good
+    reading.
+    """
+    for field, (low, high) in _FIELD_BOUNDS.items():
+        value = decoded.get(field)
+        if value is not None and not (_is_valid_number(value) and low <= value <= high):
+            decoded[field] = None
+
+    battery_ok = decoded.get("battery_ok")
+    if battery_ok is not None and battery_ok not in (0, 1):
+        decoded["battery_ok"] = None
+
+    return decoded
+
+
+def matches_expected_sensor(payload: dict[str, Any], model_filter: str, id_filter: int | None) -> bool:
+    """Reject readings from any device that isn't the configured sensor, so a
+    neighbor's weather station or an unrelated 433MHz gadget in range can't
+    get mixed into this station's history.
+    """
+    model = payload.get("model")
+    if not isinstance(model, str) or model_filter.lower() not in model.lower():
+        return False
+    if id_filter is not None and payload.get("id") != id_filter:
+        return False
+    return True
 
 
 _RAIN_RESET_EPSILON = 1e-6

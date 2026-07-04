@@ -20,4 +20,5 @@ async def get_status(manager: RTL433Manager = Depends(get_ingestion_manager)) ->
         restart_count=state.restart_count,
         last_error=state.last_error,
         is_stale=manager.is_stale(),
+        ignored_count=state.ignored_count,
     )

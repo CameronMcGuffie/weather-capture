@@ -39,6 +39,7 @@ export function StatusIndicator({ status, fetchError }: StatusIndicatorProps) {
         <p>PID: {status.pid ?? "n/a"}</p>
         <p>Restarts: {status.restart_count}</p>
         <p>Last reading: {status.last_reading_at ? new Date(status.last_reading_at).toLocaleString() : "never"}</p>
+        <p>Filtered readings: {status.ignored_count}</p>
         {status.last_error ? <p className="mt-1 text-red-400">{status.last_error}</p> : null}
       </div>
     </div>

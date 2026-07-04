@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,22 @@ class Settings(BaseSettings):
     static_dir: str = "/app/static"
 
     log_level: str = "INFO"
+
+    # 433MHz has no authentication, so anything transmitting in range can
+    # produce a plausible-looking reading. Only accept ones whose model name
+    # contains this (case-insensitive; empty string accepts any model), and
+    # optionally lock onto one physical sensor's id once it's known.
+    sensor_model_filter: str = "Fineoffset"
+    sensor_id_filter: int | None = None
+
+    @field_validator("sensor_id_filter", mode="before")
+    @classmethod
+    def _blank_sensor_id_is_none(cls, value: object) -> object:
+        # An unset .env value still arrives as "" rather than being absent,
+        # which int | None otherwise rejects instead of treating as None.
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     @property
     def database_dir(self) -> Path:

@@ -41,6 +41,7 @@ export interface IngestionStatusResponse {
   restart_count: number;
   last_error: string | null;
   is_stale: boolean;
+  ignored_count: number;
 }
 
 export type RangeKey = "1h" | "24h" | "7d" | "30d" | "custom";

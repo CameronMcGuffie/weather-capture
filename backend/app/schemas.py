@@ -52,6 +52,7 @@ class IngestionStatusResponse(BaseModel):
     restart_count: int
     last_error: str | None
     is_stale: bool
+    ignored_count: int
 
 
 class HomeAssistantPayload(BaseModel):
