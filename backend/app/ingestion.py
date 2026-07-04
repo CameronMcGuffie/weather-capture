@@ -97,7 +97,7 @@ class RTL433Manager:
                 self._process = await asyncio.create_subprocess_exec(
                     *command,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 self.state.pid = self._process.pid
                 self.state.started_at = datetime.now(timezone.utc)
@@ -105,7 +105,16 @@ class RTL433Manager:
                 backoff = self._settings.restart_backoff_seconds
 
                 assert self._process.stdout is not None
-                await self._consume_stdout(self._process.stdout)
+                assert self._process.stderr is not None
+                # Both streams must be drained concurrently, not one after
+                # the other: rtl_433's own diagnostics (device detection,
+                # tuner info, errors) go to stderr, and if that pipe's buffer
+                # fills up while only stdout is being read, rtl_433 blocks on
+                # its next stderr write and silently hangs.
+                await asyncio.gather(
+                    self._consume_stdout(self._process.stdout),
+                    self._consume_stderr(self._process.stderr),
+                )
 
                 return_code = await self._process.wait()
                 self.state.last_error = f"rtl_433 exited with code {return_code}"
@@ -132,6 +141,15 @@ class RTL433Manager:
             if not text:
                 continue
             await self._handle_line(text)
+
+    async def _consume_stderr(self, stream: asyncio.StreamReader) -> None:
+        # rtl_433's own device/tuner diagnostics and errors (e.g. a USB
+        # dongle dropping out) show up here — surfaced at INFO so they're
+        # visible in the container logs by default, not just with LOG_LEVEL=debug.
+        async for line in stream:
+            text = line.decode("utf-8", errors="replace").strip()
+            if text:
+                logger.info("rtl_433: %s", text)
 
     async def _handle_line(self, text: str) -> None:
         # 433MHz is unlicensed and unauthenticated: a neighbor's sensor, an
