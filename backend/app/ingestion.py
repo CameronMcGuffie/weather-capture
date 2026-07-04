@@ -160,7 +160,17 @@ class RTL433Manager:
 
         if not matches_expected_sensor(payload, self._settings.sensor_model_filter, self._settings.sensor_id_filter):
             self.state.ignored_count += 1
-            logger.debug("ignoring reading from an unexpected device: %s", text)
+            # INFO (not debug) since this should be rare in a correctly
+            # configured setup, and is the first thing to check if readings
+            # seem to have stopped: it means SENSOR_MODEL_FILTER/
+            # SENSOR_ID_FILTER no longer match what's actually transmitting
+            # (e.g. the sensor's id changed after a battery swap).
+            logger.info(
+                "ignoring reading from an unexpected device (model=%r, id=%r): %s",
+                payload.get("model"),
+                payload.get("id"),
+                text,
+            )
             return
 
         try:
@@ -175,8 +185,8 @@ class RTL433Manager:
                 self._last_rain_total_mm = rain_total_mm
 
             await self._database.insert_reading(timestamp, text, decoded)
-        except Exception as exc:  # a single bad reading must never crash ingestion
-            logger.warning("discarding a reading that failed to process: %s", exc)
+        except Exception:  # a single bad reading must never crash ingestion
+            logger.warning("discarding a reading that failed to process: %s", text, exc_info=True)
             return
 
         self.state.last_reading_at = datetime.now(timezone.utc)

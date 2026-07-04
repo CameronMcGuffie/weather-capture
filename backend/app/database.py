@@ -42,8 +42,11 @@ def _aggregate_query(bucket_expr: str) -> str:
     """
 
 
-_MINUTE_QUERY = _aggregate_query("strftime('%Y-%m-%dT%H:%M:00', timestamp)")
-_HOURLY_QUERY = _aggregate_query("strftime('%Y-%m-%dT%H:00:00', timestamp)")
+# The trailing literal "Z" marks these as UTC; without it, a browser parsing
+# this string interprets it as already being in the local timezone instead
+# of converting from UTC, so the chart would display the raw UTC clock time.
+_MINUTE_QUERY = _aggregate_query("strftime('%Y-%m-%dT%H:%M:00Z', timestamp)")
+_HOURLY_QUERY = _aggregate_query("strftime('%Y-%m-%dT%H:00:00Z', timestamp)")
 
 
 class Database:
