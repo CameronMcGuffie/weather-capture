@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -25,6 +26,18 @@ logger = logging.getLogger("weather.ingestion")
 _MAX_LINE_LENGTH = 8192
 
 _WATCHDOG_POLL_SECONDS = 15.0
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _strip_control_chars(text: str) -> str:
+    # 433MHz has no authentication, and this text gets logged (and stored)
+    # verbatim; a crafted payload containing a bare \r or an ANSI escape
+    # sequence would otherwise be interpreted by a terminal tailing the
+    # logs, letting it forge/hide log lines. Legitimate rtl_433 JSON never
+    # contains a raw control byte (the JSON spec requires them \u-escaped
+    # inside string values), so this can't affect real data.
+    return _CONTROL_CHARS_RE.sub("", text)
 
 
 def _reject_non_finite_constant(token: str) -> float:
@@ -173,7 +186,7 @@ class RTL433Manager:
 
     async def _consume_stdout(self, stream: asyncio.StreamReader) -> None:
         async for line in stream:
-            text = line.decode("utf-8", errors="replace").strip()
+            text = _strip_control_chars(line.decode("utf-8", errors="replace").strip())
             if not text:
                 continue
             await self._handle_line(text)
@@ -183,7 +196,7 @@ class RTL433Manager:
         # dongle dropping out) show up here — surfaced at INFO so they're
         # visible in the container logs by default, not just with LOG_LEVEL=debug.
         async for line in stream:
-            text = line.decode("utf-8", errors="replace").strip()
+            text = _strip_control_chars(line.decode("utf-8", errors="replace").strip())
             if text:
                 logger.info("rtl_433: %s", text)
 

@@ -199,6 +199,14 @@ ingestion pipeline treats every line as untrusted:
 - **No reading can crash ingestion** — any unexpected failure while
   processing a single line is caught and logged; it's discarded without
   restarting the `rtl_433` subprocess.
+- **Log/terminal injection** — raw lines are logged for debugging, so a
+  crafted payload containing a bare `\r` or an ANSI escape sequence could
+  otherwise forge or hide log lines in a terminal tailing the logs. Control
+  characters are stripped before the text is logged or stored.
+- **No SQL injection, SSRF, or command injection** — every query uses
+  parameterized SQL, the app makes zero outbound network requests, and
+  `rtl_433` is launched via an argument list (not a shell), so there's no
+  path from a crafted reading to any of these.
 - **Stuck-but-still-running `rtl_433`** — normally a dead/crashed `rtl_433`
   triggers the exponential-backoff restart loop, but it can also fail to
   claim the USB dongle (most commonly right after a redeploy, before the
