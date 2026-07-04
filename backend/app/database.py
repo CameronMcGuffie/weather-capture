@@ -58,8 +58,11 @@ class Database:
         self._connection.row_factory = aiosqlite.Row
         # WAL lets the ingestion writer and API readers proceed concurrently
         # without the dashboard blocking on the next incoming sensor reading.
+        # busy_timeout makes a reader wait out a writer's brief commit window
+        # instead of raising "database is locked" for an instant of overlap.
         await self._connection.execute("PRAGMA journal_mode=WAL;")
         await self._connection.execute("PRAGMA synchronous=NORMAL;")
+        await self._connection.execute("PRAGMA busy_timeout=5000;")
         await self._connection.executescript(SCHEMA)
         await self._connection.commit()
 

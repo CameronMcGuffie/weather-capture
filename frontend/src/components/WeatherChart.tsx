@@ -126,8 +126,8 @@ export function WeatherChart() {
   }, [compareWeeks, comparePoints, points, resolution, metric]);
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
         <div className="flex flex-wrap gap-1 rounded-lg bg-slate-800/60 p-1">
           {METRICS.map((entry) => (
             <button
@@ -143,7 +143,7 @@ export function WeatherChart() {
           ))}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <label className="flex items-center gap-2 text-sm text-slate-400">
             <input
               type="checkbox"
@@ -155,7 +155,7 @@ export function WeatherChart() {
           </label>
 
           {!compareWeeks && (
-            <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
+            <div className="flex flex-wrap gap-1 rounded-lg bg-slate-800/60 p-1">
               {RANGES.map((entry) => (
                 <button
                   key={entry.key}

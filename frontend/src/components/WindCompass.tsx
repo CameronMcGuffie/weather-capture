@@ -16,9 +16,9 @@ export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProp
   const rotation = directionDeg ?? 0;
 
   return (
-    <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <p className="self-start text-sm text-slate-400">Wind</p>
-      <svg viewBox="0 0 200 200" className="h-40 w-40">
+    <div className="flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:gap-3 sm:p-5">
+      <p className="self-start text-xs text-slate-400 sm:text-sm">Wind</p>
+      <svg viewBox="0 0 200 200" className="h-24 w-24 sm:h-40 sm:w-40">
         <circle cx="100" cy="100" r="92" fill="none" stroke="#1e293b" strokeWidth="2" />
         <circle cx="100" cy="100" r="70" fill="none" stroke="#1e293b" strokeWidth="1" />
         {ORDINALS.map((label, index) => {
@@ -50,11 +50,11 @@ export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProp
         <circle cx="100" cy="100" r="6" fill="#0ea5e9" />
       </svg>
       <div className="text-center">
-        <p className="text-2xl font-semibold text-slate-50">
+        <p className="text-lg font-semibold text-slate-50 sm:text-2xl">
           {speedKmH !== null ? speedKmH.toFixed(1) : "--"}
-          <span className="ml-1 text-base font-normal text-slate-400">km/h</span>
+          <span className="ml-1 text-sm font-normal text-slate-400 sm:text-base">km/h</span>
         </p>
-        <p className="text-sm text-slate-400">
+        <p className="text-xs text-slate-400 sm:text-sm">
           {hasDirection ? `${ordinalFor(rotation)} · ${rotation.toFixed(0)}°` : "no direction data"}
           {gustKmH !== null ? ` · gusts ${gustKmH.toFixed(1)} km/h` : ""}
         </p>
