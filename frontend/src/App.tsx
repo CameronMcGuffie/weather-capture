@@ -43,7 +43,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 items-start gap-3 sm:gap-4 lg:grid-cols-4">
+        <div className="grid grid-cols-2 items-start gap-3 sm:gap-4 lg:grid-cols-4 lg:items-stretch">
           <MetricCard
             icon={Thermometer}
             label="Temperature"

@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 import type { IngestionStatusResponse } from "../types";
 
 interface StatusIndicatorProps {
@@ -13,6 +15,22 @@ const STATUS_COPY: Record<string, { label: string; dotClass: string; pulse: bool
 };
 
 export function StatusIndicator({ status, fetchError }: StatusIndicatorProps) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
+
   if (fetchError || !status) {
     return (
       <div className="flex items-center gap-2 text-sm text-red-400">
@@ -27,15 +45,27 @@ export function StatusIndicator({ status, fetchError }: StatusIndicatorProps) {
     : STATUS_COPY[status.status];
 
   return (
-    <div className="group relative flex items-center gap-2 text-sm text-slate-300">
-      <span className="relative flex h-2.5 w-2.5">
-        {copy.pulse ? (
-          <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${copy.dotClass} opacity-75`} />
-        ) : null}
-        <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${copy.dotClass}`} />
-      </span>
-      {copy.label}
-      <div className="pointer-events-none absolute right-0 top-6 z-10 hidden w-64 rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-400 shadow-lg group-hover:block">
+    <div ref={containerRef} className="group relative">
+      {/* A button (not hover-only) so the details are reachable by tap and keyboard */}
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-2 text-sm text-slate-300"
+      >
+        <span className="relative flex h-2.5 w-2.5">
+          {copy.pulse ? (
+            <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${copy.dotClass} opacity-75`} />
+          ) : null}
+          <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${copy.dotClass}`} />
+        </span>
+        {copy.label}
+      </button>
+      <div
+        className={`absolute right-0 top-6 z-10 w-64 rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-400 shadow-lg ${
+          open ? "block" : "hidden group-hover:block"
+        }`}
+      >
         <p>PID: {status.pid ?? "n/a"}</p>
         <p>Restarts: {status.restart_count}</p>
         <p>Last reading: {status.last_reading_at ? new Date(status.last_reading_at).toLocaleString() : "never"}</p>
