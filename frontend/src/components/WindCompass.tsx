@@ -13,7 +13,11 @@ function ordinalFor(deg: number): string {
 
 export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProps) {
   const hasDirection = directionDeg !== null;
-  const rotation = directionDeg ?? 0;
+  const fromDeg = directionDeg ?? 0;
+  // The sensor reports the meteorological "from" direction; the arrow shows
+  // the direction the air is moving (from + 180°), matching how wind maps
+  // and weather apps draw it. The text below states the "from" direction.
+  const arrowRotation = fromDeg + 180;
 
   return (
     <div className="flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:gap-3 sm:p-5">
@@ -40,7 +44,7 @@ export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProp
         })}
         <g
           style={{
-            transform: `rotate(${rotation}deg)`,
+            transform: `rotate(${arrowRotation}deg)`,
             transformOrigin: "100px 100px",
             transition: "transform 0.6s ease-out",
           }}
@@ -55,7 +59,7 @@ export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProp
           <span className="ml-1 text-sm font-normal text-slate-400 sm:text-base">km/h</span>
         </p>
         <p className="text-xs text-slate-400 sm:text-sm">
-          {hasDirection ? `${ordinalFor(rotation)} · ${rotation.toFixed(0)}°` : "no direction data"}
+          {hasDirection ? `from ${ordinalFor(fromDeg)} · ${fromDeg.toFixed(0)}°` : "no direction data"}
           {gustKmH !== null ? ` · gusts ${gustKmH.toFixed(1)} km/h` : ""}
         </p>
       </div>
