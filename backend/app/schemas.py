@@ -25,8 +25,14 @@ class LatestReading(BaseModel):
 class HistoryPoint(BaseModel):
     timestamp: str
     temperature_c: float | None = None
+    temperature_c_min: float | None = None
+    temperature_c_max: float | None = None
     humidity: float | None = None
+    humidity_min: float | None = None
+    humidity_max: float | None = None
     wind_avg_km_h: float | None = None
+    wind_avg_km_h_min: float | None = None
+    wind_avg_km_h_max: float | None = None
     wind_max_km_h: float | None = None
     wind_dir_deg: float | None = None
     rain_mm: float | None = None

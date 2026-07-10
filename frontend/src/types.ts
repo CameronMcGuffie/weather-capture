@@ -17,8 +17,14 @@ export interface LatestReading {
 export interface HistoryPoint {
   timestamp: string;
   temperature_c: number | null;
+  temperature_c_min: number | null;
+  temperature_c_max: number | null;
   humidity: number | null;
+  humidity_min: number | null;
+  humidity_max: number | null;
   wind_avg_km_h: number | null;
+  wind_avg_km_h_min: number | null;
+  wind_avg_km_h_max: number | null;
   wind_max_km_h: number | null;
   wind_dir_deg: number | null;
   rain_mm: number | null;

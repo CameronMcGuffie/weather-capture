@@ -26,12 +26,20 @@ _RAIN_TOTAL_EXPR = "COALESCE(json_extract(decoded_data, '$.rain_total_mm'), json
 
 
 def _aggregate_query(bucket_expr: str) -> str:
+    # Per-bucket MIN/MAX ride along with the averages so the chart can show
+    # the extremes an average hides once buckets span many readings.
     return f"""
         SELECT
             {bucket_expr} AS bucket,
             AVG(json_extract(decoded_data, '$.temperature_c')) AS temperature_c,
+            MIN(json_extract(decoded_data, '$.temperature_c')) AS temperature_c_min,
+            MAX(json_extract(decoded_data, '$.temperature_c')) AS temperature_c_max,
             AVG(json_extract(decoded_data, '$.humidity')) AS humidity,
+            MIN(json_extract(decoded_data, '$.humidity')) AS humidity_min,
+            MAX(json_extract(decoded_data, '$.humidity')) AS humidity_max,
             AVG(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h,
+            MIN(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h_min,
+            MAX(json_extract(decoded_data, '$.wind_avg_km_h')) AS wind_avg_km_h_max,
             MAX(json_extract(decoded_data, '$.wind_max_km_h')) AS wind_max_km_h,
             AVG(json_extract(decoded_data, '$.wind_dir_deg')) AS wind_dir_deg,
             MAX({_RAIN_TOTAL_EXPR}) AS rain_mm

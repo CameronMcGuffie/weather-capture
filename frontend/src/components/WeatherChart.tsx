@@ -1,10 +1,11 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,11 +17,48 @@ import type { HistoryPoint, RangeKey } from "../types";
 
 type MetricKey = "temperature_c" | "humidity" | "wind_avg_km_h" | "rain_mm";
 
-const METRICS: { key: MetricKey; label: string; unit: string; color: string }[] = [
-  { key: "temperature_c", label: "Temperature", unit: "°C", color: "#f97316" },
-  { key: "humidity", label: "Humidity", unit: "%", color: "#38bdf8" },
-  { key: "wind_avg_km_h", label: "Wind avg", unit: "km/h", color: "#a3e635" },
-  { key: "rain_mm", label: "Rain", unit: "mm", color: "#818cf8" },
+interface MetricConfig {
+  key: MetricKey;
+  label: string;
+  unit: string;
+  color: string;
+  digits: number;
+  minKey?: keyof HistoryPoint;
+  maxKey?: keyof HistoryPoint;
+}
+
+// Rain has no min/max band: it's a cumulative total, so a bucket's min/max
+// are just its start and end values; the window summary shows the
+// accumulated amount instead.
+const METRICS: MetricConfig[] = [
+  {
+    key: "temperature_c",
+    label: "Temperature",
+    unit: "°C",
+    color: "#f97316",
+    digits: 1,
+    minKey: "temperature_c_min",
+    maxKey: "temperature_c_max",
+  },
+  {
+    key: "humidity",
+    label: "Humidity",
+    unit: "%",
+    color: "#38bdf8",
+    digits: 0,
+    minKey: "humidity_min",
+    maxKey: "humidity_max",
+  },
+  {
+    key: "wind_avg_km_h",
+    label: "Wind avg",
+    unit: "km/h",
+    color: "#a3e635",
+    digits: 1,
+    minKey: "wind_avg_km_h_min",
+    maxKey: "wind_avg_km_h_max",
+  },
+  { key: "rain_mm", label: "Rain", unit: "mm", color: "#818cf8", digits: 1 },
 ];
 
 const RANGES: { key: RangeKey; label: string }[] = [
@@ -185,11 +223,16 @@ export function WeatherChart() {
       }));
     }
 
-    return points.map((point) => ({
-      label: formatTick(point.timestamp, resolution),
-      value: point[metric],
-    }));
-  }, [compareWeeks, compareData, points, resolution, metric]);
+    return points.map((point) => {
+      const min = metricConfig.minKey ? (point[metricConfig.minKey] as number | null) : null;
+      const max = metricConfig.maxKey ? (point[metricConfig.maxKey] as number | null) : null;
+      return {
+        label: formatTick(point.timestamp, resolution),
+        value: point[metric],
+        range: min !== null && max !== null ? ([min, max] as [number, number]) : null,
+      };
+    });
+  }, [compareWeeks, compareData, points, resolution, metric, metricConfig]);
 
   const hasData = useMemo(
     () =>
@@ -200,6 +243,30 @@ export function WeatherChart() {
       ),
     [chartData, compareWeeks],
   );
+
+  const summary = useMemo(() => {
+    if (compareWeeks) {
+      return null;
+    }
+    const values = points.map((point) => point[metric]).filter((value): value is number => value !== null);
+    if (values.length === 0) {
+      return null;
+    }
+
+    if (metric === "rain_mm") {
+      // Rain is cumulative, so the amount that fell inside the window is
+      // the difference between its last and first values.
+      return { kind: "rain" as const, total: Math.max(...values) - Math.min(...values) };
+    }
+
+    const lows = points
+      .map((point) => (metricConfig.minKey ? (point[metricConfig.minKey] as number | null) : null) ?? point[metric])
+      .filter((value): value is number => value !== null);
+    const highs = points
+      .map((point) => (metricConfig.maxKey ? (point[metricConfig.maxKey] as number | null) : null) ?? point[metric])
+      .filter((value): value is number => value !== null);
+    return { kind: "band" as const, low: Math.min(...lows), high: Math.max(...highs) };
+  }, [compareWeeks, points, metric, metricConfig]);
 
   const showTimeNav = !compareWeeks && range !== "custom";
 
@@ -307,19 +374,51 @@ export function WeatherChart() {
         </div>
       )}
 
+      {summary && hasData && !error && (
+        <p className="mb-2 text-right text-xs text-slate-400 sm:text-sm">
+          {summary.kind === "rain" ? (
+            <>
+              Total in window{" "}
+              <span className="font-medium text-slate-200">
+                {summary.total.toFixed(metricConfig.digits)} {metricConfig.unit}
+              </span>
+            </>
+          ) : (
+            <>
+              Low{" "}
+              <span className="font-medium text-slate-200">
+                {summary.low.toFixed(metricConfig.digits)}
+                {metricConfig.unit}
+              </span>
+              {" · "}High{" "}
+              <span className="font-medium text-slate-200">
+                {summary.high.toFixed(metricConfig.digits)}
+                {metricConfig.unit}
+              </span>
+            </>
+          )}
+        </p>
+      )}
+
       {error ? (
         <p className="py-12 text-center text-sm text-red-400">{error}</p>
       ) : hasLoaded && !hasData ? (
         <p className="py-12 text-center text-sm text-slate-500">No data recorded in this time window</p>
       ) : (
         <ResponsiveContainer width="100%" height={320}>
-          <LineChart data={chartData}>
+          <ComposedChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
             <XAxis dataKey="label" stroke="#64748b" fontSize={12} tickMargin={8} minTickGap={24} />
             <YAxis stroke="#64748b" fontSize={12} unit={metricConfig.unit} width={56} />
             <Tooltip
               contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
               labelStyle={{ color: "#94a3b8" }}
+              formatter={(value: number | string | (number | string)[], name: string | number) => {
+                if (Array.isArray(value)) {
+                  return [`${value[0]} – ${value[1]} ${metricConfig.unit}`, "min – max"];
+                }
+                return [`${value} ${metricConfig.unit}`, String(name)];
+              }}
             />
             {compareWeeks ? (
               <>
@@ -345,17 +444,32 @@ export function WeatherChart() {
                 />
               </>
             ) : (
-              <Line
-                type="monotone"
-                dataKey="value"
-                name={metricConfig.label}
-                stroke={metricConfig.color}
-                dot={false}
-                strokeWidth={2}
-                connectNulls
-              />
+              <>
+                {metricConfig.minKey && (
+                  <Area
+                    type="monotone"
+                    dataKey="range"
+                    name="min – max"
+                    stroke="none"
+                    fill={metricConfig.color}
+                    fillOpacity={0.14}
+                    activeDot={false}
+                    legendType="none"
+                    connectNulls
+                  />
+                )}
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  name={metricConfig.label}
+                  stroke={metricConfig.color}
+                  dot={false}
+                  strokeWidth={2}
+                  connectNulls
+                />
+              </>
             )}
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
       )}
     </div>
