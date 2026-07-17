@@ -50,4 +50,12 @@ export interface IngestionStatusResponse {
   ignored_count: number;
 }
 
-export type RangeKey = "1h" | "24h" | "7d" | "30d" | "custom";
+export type RangeKey = "1h" | "12h" | "24h" | "7d" | "30d" | "custom";
+
+export interface WindowSummary {
+  start: string;
+  end: string;
+  temperature_c_min: number | null;
+  temperature_c_max: number | null;
+  rain_mm: number | null;
+}

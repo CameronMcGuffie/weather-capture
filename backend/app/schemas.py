@@ -50,6 +50,14 @@ class WeekComparisonResponse(BaseModel):
     previous_week: list[HistoryPoint]
 
 
+class WindowSummary(BaseModel):
+    start: datetime
+    end: datetime
+    temperature_c_min: float | None = None
+    temperature_c_max: float | None = None
+    rain_mm: float | None = None
+
+
 class IngestionStatusResponse(BaseModel):
     status: Literal["starting", "running", "restarting", "stopped"]
     pid: int | None

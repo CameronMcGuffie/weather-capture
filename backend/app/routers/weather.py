@@ -12,12 +12,13 @@ from fastapi.responses import StreamingResponse
 
 from app.database import Database
 from app.dependencies import get_database
-from app.schemas import HistoryPoint, HistoryResponse, HomeAssistantPayload, LatestReading
+from app.schemas import HistoryPoint, HistoryResponse, HomeAssistantPayload, LatestReading, WindowSummary
 
 router = APIRouter(prefix="/api", tags=["weather"])
 
 _RANGE_SPANS: dict[str, timedelta] = {
     "1h": timedelta(hours=1),
+    "12h": timedelta(hours=12),
     "24h": timedelta(hours=24),
     "7d": timedelta(days=7),
     "30d": timedelta(days=30),
@@ -34,7 +35,7 @@ _CANONICAL_FIELDS = (
 
 
 def _resolve_span(
-    range_key: Literal["1h", "24h", "7d", "30d", "custom"],
+    range_key: Literal["1h", "12h", "24h", "7d", "30d", "custom"],
     start: datetime | None,
     end: datetime | None,
 ) -> tuple[datetime, datetime]:
@@ -116,13 +117,12 @@ async def get_latest(database: Database = Depends(get_database)) -> LatestReadin
 
 @router.get("/history", response_model=HistoryResponse)
 async def get_history(
-    range: Literal["1h", "24h", "7d", "30d", "custom"] = Query("24h"),
+    range: Literal["1h", "12h", "24h", "7d", "30d", "custom"] = Query("24h"),
     start: datetime | None = Query(None),
     end: datetime | None = Query(None),
     database: Database = Depends(get_database),
 ) -> HistoryResponse:
     span_start, span_end = _resolve_span(range, start, end)
-    rain_baseline = await database.fetch_rain_baseline_mm()
 
     if span_end - span_start > timedelta(hours=24):
         rows = await database.fetch_hourly_aggregates(span_start, span_end)
@@ -134,8 +134,37 @@ async def get_history(
         rows = await database.fetch_minute_aggregates(span_start, span_end)
         resolution = "minute"
 
+    # Rain is re-based to the first value inside the window, so the chart
+    # shows rain that fell during the displayed period (starting from 0)
+    # rather than a lifetime total that old rain keeps propping up forever.
+    rain_baseline = next((row["rain_mm"] for row in rows if row["rain_mm"] is not None), None)
+
     points = [_build_history_point(row, rain_baseline) for row in rows]
     return HistoryResponse(resolution=resolution, start=span_start, end=span_end, points=points)
+
+
+@router.get("/summary", response_model=WindowSummary)
+async def get_window_summary(
+    hours: int = Query(24, ge=1, le=720),
+    database: Database = Depends(get_database),
+) -> WindowSummary:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=hours)
+    row = await database.fetch_window_summary(start, end)
+
+    rain_mm: float | None = None
+    if row["rain_first_mm"] is not None and row["rain_last_mm"] is not None:
+        # The reset-aware total only ever climbs, so last minus first is the
+        # rain that fell inside the window.
+        rain_mm = _round(row["rain_last_mm"] - row["rain_first_mm"], 2)
+
+    return WindowSummary(
+        start=start,
+        end=end,
+        temperature_c_min=_round(row["temperature_c_min"], 1),
+        temperature_c_max=_round(row["temperature_c_max"], 1),
+        rain_mm=rain_mm,
+    )
 
 
 @router.get("/export")

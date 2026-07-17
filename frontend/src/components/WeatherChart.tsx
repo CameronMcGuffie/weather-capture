@@ -63,6 +63,7 @@ const METRICS: MetricConfig[] = [
 
 const RANGES: { key: RangeKey; label: string }[] = [
   { key: "1h", label: "1h" },
+  { key: "12h", label: "12h" },
   { key: "24h", label: "24h" },
   { key: "7d", label: "7d" },
   { key: "30d", label: "30d" },
@@ -71,6 +72,7 @@ const RANGES: { key: RangeKey; label: string }[] = [
 
 const RANGE_HOURS: Record<Exclude<RangeKey, "custom">, number> = {
   "1h": 1,
+  "12h": 12,
   "24h": 24,
   "7d": 168,
   "30d": 720,

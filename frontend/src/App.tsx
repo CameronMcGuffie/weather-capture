@@ -1,6 +1,6 @@
-import { BatteryWarning, CloudRain, Droplets, Thermometer } from "lucide-react";
+import { BatteryWarning, CloudRain, Droplets, Thermometer, ThermometerSnowflake, ThermometerSun } from "lucide-react";
 
-import { fetchLatest, fetchStatus } from "./api/client";
+import { fetchLatest, fetchStatus, fetchSummary } from "./api/client";
 import { ExportPanel } from "./components/ExportPanel";
 import { MetricCard } from "./components/MetricCard";
 import { StatusIndicator } from "./components/StatusIndicator";
@@ -15,6 +15,7 @@ function formatValue(value: number | null, digits = 1): string {
 export default function App() {
   const { data: latest, error: latestError } = usePolling(fetchLatest, 10_000);
   const { data: status, error: statusError } = usePolling(fetchStatus, 10_000);
+  const { data: summary } = usePolling(() => fetchSummary(24), 60_000);
 
   return (
     <div className="min-h-screen bg-slate-950 px-4 py-8 sm:px-8">
@@ -43,7 +44,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 items-start gap-3 sm:gap-4 lg:grid-cols-4 lg:items-stretch">
+        <div className="grid grid-cols-2 items-start gap-3 sm:gap-4 lg:grid-cols-3 lg:items-stretch">
           <MetricCard
             icon={Thermometer}
             label="Temperature"
@@ -60,10 +61,24 @@ export default function App() {
           />
           <MetricCard
             icon={CloudRain}
-            label="Rain"
-            value={formatValue(latest?.rain_mm ?? null, 1)}
+            label="Rain (24h)"
+            value={formatValue(summary?.rain_mm ?? null, 1)}
             unit="mm"
             accent="text-indigo-400"
+          />
+          <MetricCard
+            icon={ThermometerSnowflake}
+            label="24h Low"
+            value={formatValue(summary?.temperature_c_min ?? null)}
+            unit="°C"
+            accent="text-cyan-400"
+          />
+          <MetricCard
+            icon={ThermometerSun}
+            label="24h High"
+            value={formatValue(summary?.temperature_c_max ?? null)}
+            unit="°C"
+            accent="text-amber-400"
           />
           <WindCompass
             directionDeg={latest?.wind_dir_deg ?? null}

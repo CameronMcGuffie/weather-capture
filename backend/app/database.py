@@ -118,6 +118,25 @@ class Database:
         cursor = await self.connection.execute(_HOURLY_QUERY, (start.isoformat(), end.isoformat()))
         return await cursor.fetchall()
 
+    async def fetch_window_summary(self, start: datetime, end: datetime) -> aiosqlite.Row:
+        """Extremes and rain accumulation across a whole window, for the
+        dashboard's low/high/rain tiles."""
+        cursor = await self.connection.execute(
+            f"""
+            SELECT
+                MIN(json_extract(decoded_data, '$.temperature_c')) AS temperature_c_min,
+                MAX(json_extract(decoded_data, '$.temperature_c')) AS temperature_c_max,
+                MIN({_RAIN_TOTAL_EXPR}) AS rain_first_mm,
+                MAX({_RAIN_TOTAL_EXPR}) AS rain_last_mm
+            FROM weather_readings
+            WHERE timestamp BETWEEN ? AND ?
+            """,
+            (start.isoformat(), end.isoformat()),
+        )
+        row = await cursor.fetchone()
+        assert row is not None  # aggregates always return one row
+        return row
+
     async def fetch_rain_baseline_mm(self) -> float | None:
         """The sensor reports lifetime cumulative rainfall, not a daily total.
 

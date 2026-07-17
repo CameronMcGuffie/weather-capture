@@ -1,4 +1,4 @@
-import type { HistoryResponse, IngestionStatusResponse, LatestReading, RangeKey } from "../types";
+import type { HistoryResponse, IngestionStatusResponse, LatestReading, RangeKey, WindowSummary } from "../types";
 
 async function request<T>(path: string): Promise<T> {
   const response = await fetch(path);
@@ -14,6 +14,10 @@ export function fetchLatest(): Promise<LatestReading> {
 
 export function fetchStatus(): Promise<IngestionStatusResponse> {
   return request<IngestionStatusResponse>("/api/status");
+}
+
+export function fetchSummary(hours = 24): Promise<WindowSummary> {
+  return request<WindowSummary>(`/api/summary?hours=${hours}`);
 }
 
 export function fetchHistory(range: RangeKey, start?: Date, end?: Date): Promise<HistoryResponse> {
