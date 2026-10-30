@@ -73,6 +73,12 @@ class HomeAssistantPayload(BaseModel):
     rain_mm: float | None = None
     battery_ok: int | None = None
     updated_at: datetime | None = None
+    wind_compass: str | None = None
+    feels_like_c: float | None = None
+    dew_point_c: float | None = None
+    rain_last_hour_mm: float | None = None
+    rain_24h_mm: float | None = None
+    reading_age_seconds: int | None = None
 
 
 class Stat(BaseModel):

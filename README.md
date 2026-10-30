@@ -132,7 +132,7 @@ match the verified WHx080 configuration.
 | `GET /api/history` | `?range=1h\|12h\|24h\|7d\|30d\|custom&start=&end=` — per-minute averages for spans ≤24h, hourly beyond that, each with min/max. Rain is relative to the start of the window |
 | `GET /api/summary` | `?hours=24` — low, high and rain total over the last N hours (feeds the dashboard tiles) |
 | `GET /api/export`  | `?start=&end=` — every stored reading in the range as a streamed CSV |
-| `GET /api/ha`      | Flattened JSON for Home Assistant RESTful sensors                  |
+| `GET /api/ha`      | Flat JSON for Home Assistant: the current reading plus feels-like, dew point, compass point, rain in the last hour / 24 h and the reading's age (below) |
 | `GET /api/status`  | `rtl_433` subprocess health: status, PID, restart count, last error |
 | `GET /api/now`     | Feels-like, dew point, 3-hour trends and whether it's raining      |
 | `GET /api/rain-bars` | `?hours=24&bucket=hour\|day&utc_offset_minutes=` — rain that fell in each hour or day |
@@ -179,22 +179,66 @@ direction the wind blows *from*, and over a window it's the prevailing direction
 would return more than 5000 points are refused with a message saying how to
 coarsen them. For every raw reading, use `/api/export`.
 
-Home Assistant example (`configuration.yaml`):
+### Home Assistant
+
+`GET /api/ha` is one flat JSON object, so a single REST resource can feed every
+sensor. Home Assistant calls the endpoint once per scan interval and each
+sensor picks out its own field (`configuration.yaml`):
 
 ```yaml
-sensor:
-  - platform: rest
-    resource: http://weather-capture:8000/api/ha
-    name: Weather Station
-    value_template: "{{ value_json.temperature_c }}"
-    json_attributes:
-      - humidity
-      - wind_dir_deg
-      - wind_avg_km_h
-      - wind_max_km_h
-      - rain_mm
-      - battery_ok
+rest:
+  - resource: http://weather-capture:8000/api/ha
+    scan_interval: 30
+    sensor:
+      - name: Weather Temperature
+        value_template: "{{ value_json.temperature_c }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+      - name: Weather Humidity
+        value_template: "{{ value_json.humidity }}"
+        unit_of_measurement: "%"
+        device_class: humidity
+      - name: Weather Feels Like
+        value_template: "{{ value_json.feels_like_c }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+      - name: Weather Dew Point
+        value_template: "{{ value_json.dew_point_c }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+      - name: Weather Wind Speed
+        value_template: "{{ value_json.wind_avg_km_h }}"
+        unit_of_measurement: "km/h"
+        device_class: wind_speed
+      - name: Weather Wind Gust
+        value_template: "{{ value_json.wind_max_km_h }}"
+        unit_of_measurement: "km/h"
+        device_class: wind_speed
+      - name: Weather Wind Direction
+        value_template: "{{ value_json.wind_compass }}"
+        json_attributes:
+          - wind_dir_deg
+      - name: Weather Rain Last Hour
+        value_template: "{{ value_json.rain_last_hour_mm }}"
+        unit_of_measurement: "mm"
+      - name: Weather Rain 24h
+        value_template: "{{ value_json.rain_24h_mm }}"
+        unit_of_measurement: "mm"
+    binary_sensor:
+      - name: Weather Station Online
+        value_template: "{{ value_json.reading_age_seconds is not none and value_json.reading_age_seconds < 300 }}"
+        device_class: connectivity
+      - name: Weather Station Battery Low
+        value_template: "{{ value_json.battery_ok == 0 }}"
+        device_class: battery
 ```
+
+Fields: `temperature_c`, `humidity`, `wind_dir_deg`, `wind_compass`,
+`wind_avg_km_h`, `wind_max_km_h`, `feels_like_c`, `dew_point_c`,
+`rain_last_hour_mm`, `rain_24h_mm`, `rain_mm` (the running total since
+recording began, which suits a `total_increasing` sensor or a utility meter for
+daily rain), `battery_ok` (1 = fine, 0 = low), `reading_age_seconds` and
+`updated_at` (UTC). A value that isn't available is `null`.
 
 ## Local development
 

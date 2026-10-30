@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from app.database import Database
 from app.dependencies import get_database
-from app.readings import adjust_rain, as_utc, rain_total, round_or_none, wind_direction
+from app.readings import adjust_rain, as_utc, compass_point, dew_point_c, feels_like_c, rain_total, round_or_none, wind_direction
 from app.schemas import HistoryPoint, HistoryResponse, HomeAssistantPayload, LatestReading, WindowSummary
 
 router = APIRouter(prefix="/api", tags=["weather"])
@@ -192,7 +192,14 @@ async def export_csv(
     )
 
 
-@router.get("/ha", response_model=HomeAssistantPayload)
+async def _rain_in_last(database: Database, now: datetime, span: timedelta) -> float | None:
+    row = await database.fetch_window_stats(now - span, now)
+    if row["rain_first_mm"] is None or row["rain_last_mm"] is None:
+        return None
+    return round_or_none(row["rain_last_mm"] - row["rain_first_mm"], 2)
+
+
+@router.get("/ha", response_model=HomeAssistantPayload, summary="Flat JSON for Home Assistant RESTful sensors")
 async def get_home_assistant_payload(database: Database = Depends(get_database)) -> HomeAssistantPayload:
     row = await database.fetch_latest()
     if row is None:
@@ -200,13 +207,27 @@ async def get_home_assistant_payload(database: Database = Depends(get_database))
 
     decoded = json.loads(row["decoded_data"])
     rain_baseline = await database.fetch_rain_baseline_mm()
+    temperature, humidity, wind = decoded.get("temperature_c"), decoded.get("humidity"), decoded.get("wind_avg_km_h")
+    wind_dir = decoded.get("wind_dir_deg")
+    now = datetime.now(timezone.utc)
+    observed_at = as_utc(datetime.fromisoformat(row["timestamp"]))
     return HomeAssistantPayload(
-        temperature_c=decoded.get("temperature_c"),
-        humidity=decoded.get("humidity"),
-        wind_dir_deg=decoded.get("wind_dir_deg"),
-        wind_avg_km_h=decoded.get("wind_avg_km_h"),
+        temperature_c=temperature,
+        humidity=humidity,
+        wind_dir_deg=wind_dir,
+        wind_avg_km_h=wind,
         wind_max_km_h=decoded.get("wind_max_km_h"),
         rain_mm=round_or_none(adjust_rain(rain_total(decoded), rain_baseline), 2),
         battery_ok=decoded.get("battery_ok"),
         updated_at=row["timestamp"],
+        wind_compass=compass_point(wind_dir) if wind_dir is not None else None,
+        dew_point_c=round_or_none(dew_point_c(temperature, humidity), 1) if temperature is not None and humidity is not None else None,
+        feels_like_c=(
+            round_or_none(feels_like_c(temperature, humidity, wind), 1)
+            if temperature is not None and humidity is not None and wind is not None
+            else None
+        ),
+        rain_last_hour_mm=await _rain_in_last(database, now, timedelta(hours=1)),
+        rain_24h_mm=await _rain_in_last(database, now, timedelta(hours=24)),
+        reading_age_seconds=max(0, int((now - observed_at).total_seconds())),
     )
