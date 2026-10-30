@@ -2,6 +2,7 @@ interface WindCompassProps {
   directionDeg: number | null;
   speedKmH: number | null;
   gustKmH: number | null;
+  className?: string;
 }
 
 const ORDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -11,7 +12,7 @@ function ordinalFor(deg: number): string {
   return ORDINALS[index];
 }
 
-export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProps) {
+export function WindCompass({ directionDeg, speedKmH, gustKmH, className = "" }: WindCompassProps) {
   const hasDirection = directionDeg !== null;
   const fromDeg = directionDeg ?? 0;
   // The sensor reports the meteorological "from" direction; the arrow shows
@@ -20,7 +21,7 @@ export function WindCompass({ directionDeg, speedKmH, gustKmH }: WindCompassProp
   const arrowRotation = fromDeg + 180;
 
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:gap-3 sm:p-5">
+    <div className={`flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:gap-3 sm:p-5 ${className}`}>
       <p className="self-start text-xs text-slate-400 sm:text-sm">Wind</p>
       <svg viewBox="0 0 200 200" className="h-24 w-24 sm:h-40 sm:w-40">
         <circle cx="100" cy="100" r="92" fill="none" stroke="#1e293b" strokeWidth="2" />

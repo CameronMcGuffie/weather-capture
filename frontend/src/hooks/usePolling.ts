@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
-export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number): { data: T | null; error: string | null } {
+/**
+ * Calls `fetcher` now and every `intervalMs`. Pass `deps` for anything the
+ * fetcher depends on (a selected period, say): when one changes, the old
+ * result is dropped and a fresh fetch starts straight away, so a card never
+ * shows one selection's data under another's heading.
+ */
+export function usePolling<T>(
+  fetcher: () => Promise<T>,
+  intervalMs: number,
+  deps: readonly unknown[] = [],
+): { data: T | null; error: string | null } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fetcherRef = useRef(fetcher);
@@ -8,6 +18,7 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number): { 
 
   useEffect(() => {
     let cancelled = false;
+    setData(null);
 
     const tick = async () => {
       try {
@@ -29,7 +40,7 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number): { 
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [intervalMs]);
+  }, [intervalMs, ...deps]);
 
   return { data, error };
 }

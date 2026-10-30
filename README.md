@@ -14,11 +14,18 @@ SQLite, and serves a React dashboard for live metrics and historical charts.
   restarts it with exponential backoff if it dies.
 - Every decoded reading (plus the raw JSON line) is written to SQLite, indexed
   on `timestamp` for fast range queries.
-- REST API: current conditions, aggregated history, CSV export, and a
-  Home Assistant-compatible feed.
-- Dashboard: live metric cards, an animated wind compass, interactive charts
-  (1h / 24h / 7d / 30d / custom, plus a this-week-vs-last-week comparison),
-  and a status indicator tied to the ingestion process's actual health.
+- REST API: current conditions, aggregated history, CSV export, a
+  Home Assistant-compatible feed, and agent-friendly endpoints for OpenClaw.
+- Dashboard: live metric cards with trend arrows, feels-like and dew point, an
+  animated wind compass, a today-vs-yesterday comparison, interactive charts
+  (1h / 12h / 24h / 7d / 30d / custom with a min–max band, hour-by-hour
+  navigation, a this-week-vs-last-week comparison, and the night shaded in from
+  sunrise and sunset), rain per hour or day, a wind rose, all-time records, a
+  station-health strip showing how reliably readings are arriving, and a
+  status indicator tied to the ingestion process's actual health.
+- Rain history repairs itself: on startup the app checks stored rain totals for
+  bad readings and fixes them, after taking a backup first (see
+  [Automatic rain repair](#automatic-rain-repair)).
 - Single Docker image (multi-stage build) with `docker-compose.yml` for
   one-command deployment.
 
@@ -115,16 +122,62 @@ match the verified WHx080 configuration.
 | `SENSOR_ID_FILTER`            | *(unset)*                      | Optionally lock onto one physical sensor's id (see `sensor_id` in `/api/latest`) |
 | `LOG_LEVEL`                   | `INFO`                         | Set to `DEBUG` to log every raw rtl_433 line          |
 | `WEB_PORT`                    | `8000`                         | Host port published by `docker-compose.yml`          |
+| `LATITUDE` / `LONGITUDE`      | *(unset)*                      | Where the station is, in decimal degrees (e.g. `-27.54` / `153.19`). Only used to shade night on the chart; leave blank and the shading is simply off. A suburb-level figure is plenty |
 
 ## API
 
 | Endpoint       | Description                                                        |
 |----------------|----------------------------------------------------------------------|
 | `GET /api/latest`  | Most recent decoded reading                                        |
-| `GET /api/history` | `?range=1h\|24h\|7d\|30d\|custom&start=&end=` — raw points for spans ≤24h, hourly averages beyond that |
-| `GET /api/export`  | `?start=&end=` — CSV download for the given range                  |
+| `GET /api/history` | `?range=1h\|12h\|24h\|7d\|30d\|custom&start=&end=` — per-minute averages for spans ≤24h, hourly beyond that, each with min/max. Rain is relative to the start of the window |
+| `GET /api/summary` | `?hours=24` — low, high and rain total over the last N hours (feeds the dashboard tiles) |
+| `GET /api/export`  | `?start=&end=` — every stored reading in the range as a streamed CSV |
 | `GET /api/ha`      | Flattened JSON for Home Assistant RESTful sensors                  |
 | `GET /api/status`  | `rtl_433` subprocess health: status, PID, restart count, last error |
+| `GET /api/now`     | Feels-like, dew point, 3-hour trends and whether it's raining      |
+| `GET /api/rain-bars` | `?hours=24&bucket=hour\|day&utc_offset_minutes=` — rain that fell in each hour or day |
+| `GET /api/wind-rose` | `?hours=720` — how often the wind came from each of 16 directions, split by strength |
+| `GET /api/period`  | `?start=&end=` — high, low, peak gust and rain for a stretch of time (feeds "Today") |
+| `GET /api/records` | `?utc_offset_minutes=` — hottest, coldest, strongest gust, wettest day and rain totals since recording began |
+| `GET /api/station-health` | `?hours=48` — readings received per hour, longest gap, battery and glitch counts |
+| `GET /api/sun`     | `?start=&end=` — sunrise and sunset times in a window (needs `LATITUDE`/`LONGITUDE`) |
+| `GET /api/openclaw`        | Agent snapshot: current conditions, per-period stats, station health (below) |
+| `GET /api/openclaw/series` | Agent time series: minute, hourly or daily buckets (below)  |
+
+Timestamps you send can carry any UTC offset; a time with no offset is read as
+UTC. Prefer a trailing `Z` (`2026-07-04T08:00:00Z`): in a URL a literal `+` turns
+into a space, so an offset has to be written `%2B10:00`. Everything returned is UTC.
+
+### OpenClaw
+
+Two read-only endpoints for an AI agent. There's no API key: the service is
+meant to be reachable only on the local network, so don't expose the port to the
+internet. Responses carry their own units and conventions, and the full
+parameter documentation is in the OpenAPI spec at `/openapi.json` (or `/docs`),
+which an agent can read directly.
+
+`GET /api/openclaw?windows=1h,12h,24h,7d,30d` answers most questions in one
+call: the current reading, whether the station is alive (`is_stale`,
+`reading_age_seconds`, battery), and for each window the min / max / average
+temperature, humidity and wind, the strongest gust, the prevailing wind
+direction, and the rain that fell. Windows are a whole number plus `h` or `d`
+(up to 8 per request, 1h to 366d).
+
+`GET /api/openclaw/series` gives a time series:
+
+| Parameter | Meaning |
+|---|---|
+| `hours` | How far back to look (default 24) |
+| `end` | Where the window ends (default now); set it to look at a past period |
+| `resolution` | `minute`, `hourly`, `daily`, or `auto` (the default: minute up to 3h, hourly up to 14 days, daily beyond) |
+| `utc_offset_minutes` | For `daily` only: the timezone that decides where a day starts (UTC+10 is `600`) |
+| `fields` | Any of `temperature,humidity,wind,rain` to trim the response |
+
+Rain here is the rain that fell in the period or bucket. Wind direction is the
+direction the wind blows *from*, and over a window it's the prevailing direction
+(averaged properly around north, not as a plain mean of degrees). Requests that
+would return more than 5000 points are refused with a message saying how to
+coarsen them. For every raw reading, use `/api/export`.
 
 Home Assistant example (`configuration.yaml`):
 
@@ -175,6 +228,38 @@ npm run dev
 SQLite runs in WAL mode so the ingestion writer and API reads don't block
 each other.
 
+The sensor reports a lifetime rain counter. Each reading also stores
+`rain_total_mm`, a running total that carries on through counter resets
+(new batteries); every rain figure the API gives is a difference of that total.
+The raw counter value is never overwritten: it stays in `raw_payload` and in
+`rain_mm`.
+
+### Automatic rain repair
+
+Older versions could be fooled by a glitched rain reading (the counter briefly
+reading 0 or a wild value), which counted as a battery change and inflated the
+running total by hundreds of millimetres. When the app starts it looks back over
+the stored history, works out which readings were glitches and which were genuine
+resets, and rewrites only `rain_total_mm` where it was wrong. It's safe to leave
+on:
+
+- It runs once; a note in the `meta` table stops it running again.
+- Before changing anything it makes a copy of the database next to it, named
+  `weather.db.pre-rain-repair-<timestamp>` (in `/data`, so on Unraid in your
+  appdata folder), after checking there's enough free disk space. The copy is
+  verified before the repair starts, and if the repair can't proceed nothing is
+  changed.
+- The rewrite happens in a single transaction, so it either completes or leaves
+  the data as it was.
+- If an unexpectedly large share of readings looks like noise, it assumes its
+  own judgement is the problem, changes nothing and says so in the log.
+
+Look for `rain history repaired: …` in the container log; it lists each glitch
+it found and how many millimetres of phantom rain were removed. Once you're
+happy with the numbers you can delete the backup file. One known limit: a
+glitch or counter reset that happens while the counter is below 50 mm can add
+up to that much once.
+
 ## Ingestion resilience
 
 433MHz is unlicensed and unauthenticated — anything transmitting nearby (a
@@ -196,6 +281,12 @@ ingestion pipeline treats every line as untrusted:
   against a physically plausible range (e.g. -50–60°C, 0–100% humidity); a
   field outside that range is nulled rather than discarding the whole
   reading, so one corrupted field doesn't cost an otherwise-good reading.
+- **Corrupt rain readings** — the rain counter only goes up, so a reading
+  that drops (or leaps) looks just like a counter reset, and acting on one
+  corrupt value would add it to the running total twice. Any such reading is
+  held back until the next reading agrees with it; if the next reading is
+  back to normal, the held one is discarded. Its raw value stays in
+  `raw_payload`.
 - **No reading can crash ingestion** — any unexpected failure while
   processing a single line is caught and logged; it's discarded without
   restarting the `rtl_433` subprocess.

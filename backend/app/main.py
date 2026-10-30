@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,10 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.database import Database
 from app.ingestion import RTL433Manager
-from app.routers import status, weather
+from app.migrations import run_startup_migrations
+from app.routers import insights, openclaw, status, weather
 
 _log_level = getattr(logging, get_settings().log_level.upper(), logging.INFO)
 logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# At DEBUG, aiosqlite logs every statement in full, burying the rtl_433 lines.
+logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -24,6 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     database = Database(settings.database_path)
     await database.connect()
+    # Before ingestion starts, so nothing is writing while history is repaired.
+    await run_startup_migrations(database, settings.database_path)
 
     ingestion = RTL433Manager(settings, database)
     await ingestion.start()
@@ -51,6 +56,8 @@ def create_app() -> FastAPI:
 
     app.include_router(weather.router)
     app.include_router(status.router)
+    app.include_router(openclaw.router)
+    app.include_router(insights.router)
 
     static_dir = Path(settings.static_dir)
     if static_dir.is_dir():
@@ -60,6 +67,9 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def serve_spa(full_path: str) -> FileResponse:
+            # An unknown API path must be a JSON 404, not the SPA's HTML page.
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
             return FileResponse(static_dir / "index.html")
 
     return app

@@ -12,7 +12,7 @@ from enum import Enum
 from app.config import Settings
 from app.database import Database
 from app.decoder import (
-    compute_rain_total_mm,
+    RainTracker,
     decode_payload,
     matches_expected_sensor,
     parse_payload_timestamp,
@@ -74,9 +74,9 @@ class RTL433Manager:
         self._process: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task[None] | None = None
         self._stopping = False
+        self._stop_event = asyncio.Event()
         self.state = IngestionState()
-        self._last_rain_raw_mm: float | None = None
-        self._last_rain_total_mm: float | None = None
+        self._rain = RainTracker()
 
     def is_stale(self) -> bool:
         if self.state.last_reading_at is None:
@@ -86,13 +86,15 @@ class RTL433Manager:
 
     async def start(self) -> None:
         self._stopping = False
+        self._stop_event.clear()
         rain_state = await self._database.fetch_latest_rain_state()
         if rain_state is not None:
-            self._last_rain_raw_mm, self._last_rain_total_mm = rain_state
+            self._rain = RainTracker(*rain_state)
         self._task = asyncio.create_task(self._run_forever(), name="rtl433-ingestion")
 
     async def stop(self) -> None:
         self._stopping = True
+        self._stop_event.set()
         if self._process is not None and self._process.returncode is None:
             self._process.terminate()
             try:
@@ -153,7 +155,9 @@ class RTL433Manager:
             self.state.status = IngestionStatus.RESTARTING
             self.state.restart_count += 1
             logger.warning("rtl_433 stopped (%s), restarting in %.1fs", self.state.last_error, backoff)
-            await asyncio.sleep(backoff)
+            # Interruptible, so a shutdown during a long backoff isn't held up.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
             backoff = min(backoff * 2, self._settings.max_restart_backoff_seconds)
 
         self.state.status = IngestionStatus.STOPPED
@@ -170,7 +174,11 @@ class RTL433Manager:
         """
         while True:
             await asyncio.sleep(_WATCHDOG_POLL_SECONDS)
-            reference = self.state.last_reading_at or self.state.started_at
+            # Silence is measured from whichever is later: the last reading
+            # or this process's launch. Using the last reading alone would
+            # kill every fresh process right after a long sensor outage,
+            # before it had any chance to hear the sensor again.
+            reference = max(filter(None, (self.state.last_reading_at, self.state.started_at)), default=None)
             if reference is None:
                 continue
             elapsed = (datetime.now(timezone.utc) - reference).total_seconds()
@@ -244,12 +252,15 @@ class RTL433Manager:
             decoded = sanitize_decoded(decode_payload(payload))
             timestamp = parse_payload_timestamp(payload)
 
-            current_rain_mm = decoded.get("rain_mm")
-            rain_total_mm = compute_rain_total_mm(current_rain_mm, self._last_rain_raw_mm, self._last_rain_total_mm)
+            rain_total_mm, rain_accepted = self._rain.update(decoded.get("rain_mm"))
             if rain_total_mm is not None:
                 decoded["rain_total_mm"] = rain_total_mm
-                self._last_rain_raw_mm = current_rain_mm
-                self._last_rain_total_mm = rain_total_mm
+            if not rain_accepted:
+                # Held back as a suspect glitch: the original value is still
+                # in raw_payload, but it mustn't be mistaken for a trusted
+                # reading (e.g. when seeding the tracker after a restart).
+                logger.info("holding back implausible rain reading %s mm pending confirmation", decoded["rain_mm"])
+                decoded["rain_mm"] = None
 
             await self._database.insert_reading(timestamp, text, decoded)
         except Exception:  # a single bad reading must never crash ingestion

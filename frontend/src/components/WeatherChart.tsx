@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Moon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Area,
@@ -6,14 +6,17 @@ import {
   ComposedChart,
   Legend,
   Line,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
-import { fetchHistory } from "../api/client";
-import type { HistoryPoint, RangeKey } from "../types";
+import { fetchHistory, fetchSun } from "../api/client";
+import { niceTicks, nightSpans, tickLabel, withGapBreaks } from "../chartTime";
+import { localDateInputValue } from "../dates";
+import type { HistoryPoint, RangeKey, SunEvent } from "../types";
 
 type MetricKey = "temperature_c" | "humidity" | "wind_avg_km_h" | "rain_mm";
 
@@ -79,6 +82,7 @@ const RANGE_HOURS: Record<Exclude<RangeKey, "custom">, number> = {
 };
 
 const HOUR_MS = 3_600_000;
+const MINUTE_MS = 60_000;
 const COMPARE_SLOTS = 168;
 
 interface CompareData {
@@ -88,18 +92,12 @@ interface CompareData {
   previousStartMs: number;
 }
 
-function formatTick(timestamp: string, resolution: "minute" | "hourly"): string {
-  const date = new Date(timestamp);
-  if (resolution === "hourly") {
-    return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit" });
-  }
-  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-}
-
-function isoDaysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
+interface ChartRow {
+  t: number;
+  value?: number | null;
+  range?: [number, number] | null;
+  current?: number | null;
+  previous?: number | null;
 }
 
 function bucketByHour(points: HistoryPoint[], startMs: number, metric: MetricKey): (number | null)[] {
@@ -121,12 +119,14 @@ export function WeatherChart() {
   const [metric, setMetric] = useState<MetricKey>("temperature_c");
   const [compareWeeks, setCompareWeeks] = useState(false);
   const [offsetHours, setOffsetHours] = useState(0);
-  const [customStart, setCustomStart] = useState(isoDaysAgo(2));
-  const [customEnd, setCustomEnd] = useState(isoDaysAgo(0));
+  const [customStart, setCustomStart] = useState(localDateInputValue(2));
+  const [customEnd, setCustomEnd] = useState(localDateInputValue(0));
 
   const [points, setPoints] = useState<HistoryPoint[]>([]);
+  const [viewWindow, setViewWindow] = useState<{ start: number; end: number } | null>(null);
   const [resolution, setResolution] = useState<"minute" | "hourly">("minute");
   const [compareData, setCompareData] = useState<CompareData | null>(null);
+  const [sunEvents, setSunEvents] = useState<SunEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
 
@@ -163,6 +163,7 @@ export function WeatherChart() {
               currentStartMs,
               previousStartMs,
             });
+            setViewWindow({ start: currentStartMs, end: nowMs });
             setResolution("hourly");
             setError(null);
             setHasLoaded(true);
@@ -192,6 +193,7 @@ export function WeatherChart() {
 
         if (!cancelled) {
           setPoints(response.points);
+          setViewWindow({ start: Date.parse(response.start), end: Date.parse(response.end) });
           setResolution(response.resolution);
           setError(null);
           setHasLoaded(true);
@@ -211,37 +213,60 @@ export function WeatherChart() {
     };
   }, [range, compareWeeks, offsetHours, customStart, customEnd]);
 
-  const chartData = useMemo(() => {
+  // Sunrise and sunset for the visible window. Asked for in whole hours so the
+  // minute-by-minute refresh of a "last 24 hours" view doesn't refetch them.
+  const sunFrom = viewWindow ? Math.floor(viewWindow.start / HOUR_MS) : null;
+  const sunTo = viewWindow ? Math.ceil(viewWindow.end / HOUR_MS) : null;
+  useEffect(() => {
+    if (sunFrom === null || sunTo === null || compareWeeks) {
+      return;
+    }
+    let cancelled = false;
+    fetchSun(new Date(sunFrom * HOUR_MS), new Date(sunTo * HOUR_MS))
+      .then((response) => {
+        if (!cancelled) {
+          setSunEvents(response.configured ? response.events : null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSunEvents(null); // shading is a nicety; the chart works without it
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sunFrom, sunTo, compareWeeks]);
+
+  const chartData = useMemo<ChartRow[]>(() => {
     if (compareWeeks && compareData) {
       const current = bucketByHour(compareData.current, compareData.currentStartMs, metric);
       const previous = bucketByHour(compareData.previous, compareData.previousStartMs, metric);
       return Array.from({ length: COMPARE_SLOTS }, (_, index) => ({
-        label: new Date(compareData.currentStartMs + index * HOUR_MS).toLocaleString(undefined, {
-          weekday: "short",
-          hour: "2-digit",
-        }),
+        t: compareData.currentStartMs + index * HOUR_MS,
         current: current[index],
         previous: previous[index],
       }));
     }
 
-    return points.map((point) => {
+    const rows = points.map((point) => {
       const min = metricConfig.minKey ? (point[metricConfig.minKey] as number | null) : null;
       const max = metricConfig.maxKey ? (point[metricConfig.maxKey] as number | null) : null;
       return {
-        label: formatTick(point.timestamp, resolution),
+        t: Date.parse(point.timestamp),
         value: point[metric],
         range: min !== null && max !== null ? ([min, max] as [number, number]) : null,
       };
     });
+    return withGapBreaks(rows, resolution === "minute" ? MINUTE_MS : HOUR_MS);
   }, [compareWeeks, compareData, points, resolution, metric, metricConfig]);
 
   const hasData = useMemo(
     () =>
       chartData.some((entry) =>
         compareWeeks
-          ? ("current" in entry && entry.current !== null) || ("previous" in entry && entry.previous !== null)
-          : "value" in entry && entry.value !== null,
+          ? ("current" in entry && entry.current != null) || ("previous" in entry && entry.previous != null)
+          : "value" in entry && entry.value != null,
       ),
     [chartData, compareWeeks],
   );
@@ -270,7 +295,23 @@ export function WeatherChart() {
     return { kind: "band" as const, low: Math.min(...lows), high: Math.max(...highs) };
   }, [compareWeeks, points, metric, metricConfig]);
 
+  const axis = useMemo(() => (viewWindow ? niceTicks(viewWindow.start, viewWindow.end) : null), [viewWindow]);
+  const nights = useMemo(
+    () => (!compareWeeks && sunEvents && viewWindow ? nightSpans(sunEvents, viewWindow.start, viewWindow.end) : []),
+    [compareWeeks, sunEvents, viewWindow],
+  );
+
+  const formatTooltipTime = (value: number) =>
+    new Date(value).toLocaleString([], {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "numeric",
+      minute: resolution === "minute" && !compareWeeks ? "2-digit" : undefined,
+    });
+
   const showTimeNav = !compareWeeks && range !== "custom";
+  const showNightKey = !compareWeeks && sunEvents !== null;
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
@@ -376,30 +417,42 @@ export function WeatherChart() {
         </div>
       )}
 
-      {summary && hasData && !error && (
-        <p className="mb-2 text-right text-xs text-slate-400 sm:text-sm">
-          {summary.kind === "rain" ? (
-            <>
-              Total in window{" "}
-              <span className="font-medium text-slate-200">
-                {summary.total.toFixed(metricConfig.digits)} {metricConfig.unit}
-              </span>
-            </>
-          ) : (
-            <>
-              Low{" "}
-              <span className="font-medium text-slate-200">
-                {summary.low.toFixed(metricConfig.digits)}
-                {metricConfig.unit}
-              </span>
-              {" · "}High{" "}
-              <span className="font-medium text-slate-200">
-                {summary.high.toFixed(metricConfig.digits)}
-                {metricConfig.unit}
-              </span>
-            </>
-          )}
-        </p>
+      {hasData && !error && (showNightKey || summary) && (
+        <div className="mb-2 flex items-center justify-between gap-3 text-xs text-slate-400 sm:text-sm">
+          <span className="flex items-center gap-1.5">
+            {showNightKey ? (
+              <>
+                <Moon size={14} aria-hidden="true" />
+                Night shaded
+              </>
+            ) : null}
+          </span>
+          {summary ? (
+            <p className="text-right">
+              {summary.kind === "rain" ? (
+                <>
+                  Total in window{" "}
+                  <span className="font-medium text-slate-200">
+                    {summary.total.toFixed(metricConfig.digits)} {metricConfig.unit}
+                  </span>
+                </>
+              ) : (
+                <>
+                  Low{" "}
+                  <span className="font-medium text-slate-200">
+                    {summary.low.toFixed(metricConfig.digits)}
+                    {metricConfig.unit}
+                  </span>
+                  {" · "}High{" "}
+                  <span className="font-medium text-slate-200">
+                    {summary.high.toFixed(metricConfig.digits)}
+                    {metricConfig.unit}
+                  </span>
+                </>
+              )}
+            </p>
+          ) : null}
+        </div>
       )}
 
       {error ? (
@@ -410,11 +463,26 @@ export function WeatherChart() {
         <ResponsiveContainer width="100%" height={320}>
           <ComposedChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-            <XAxis dataKey="label" stroke="#64748b" fontSize={12} tickMargin={8} minTickGap={24} />
+            {nights.map(([from, to]) => (
+              <ReferenceArea key={from} x1={from} x2={to} fill="#94a3b8" fillOpacity={0.1} stroke="none" ifOverflow="hidden" />
+            ))}
+            <XAxis
+              type="number"
+              dataKey="t"
+              scale="time"
+              domain={viewWindow ? [viewWindow.start, viewWindow.end] : ["dataMin", "dataMax"]}
+              ticks={axis?.ticks}
+              tickFormatter={(value: number) => (axis ? tickLabel(value, axis.step) : String(value))}
+              allowDataOverflow
+              stroke="#64748b"
+              fontSize={12}
+              tickMargin={8}
+            />
             <YAxis stroke="#64748b" fontSize={12} unit={metricConfig.unit} width={56} />
             <Tooltip
               contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
               labelStyle={{ color: "#94a3b8" }}
+              labelFormatter={formatTooltipTime}
               formatter={(value: number | string | (number | string)[], name: string | number) => {
                 if (Array.isArray(value)) {
                   return [`${value[0]} – ${value[1]} ${metricConfig.unit}`, "min – max"];
@@ -457,7 +525,6 @@ export function WeatherChart() {
                     fillOpacity={0.14}
                     activeDot={false}
                     legendType="none"
-                    connectNulls
                   />
                 )}
                 <Line
@@ -467,7 +534,6 @@ export function WeatherChart() {
                   stroke={metricConfig.color}
                   dot={false}
                   strokeWidth={2}
-                  connectNulls
                 />
               </>
             )}

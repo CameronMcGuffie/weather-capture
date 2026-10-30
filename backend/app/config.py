@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,9 +16,6 @@ class Settings(BaseSettings):
     rtl_extra_flags: str = "-Y autolevel -Y magest"
 
     database_path: str = "/data/weather.db"
-
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
 
     cors_origins: str = "*"
 
@@ -47,18 +43,20 @@ class Settings(BaseSettings):
     sensor_model_filter: str = "Fineoffset"
     sensor_id_filter: int | None = None
 
-    @field_validator("sensor_id_filter", mode="before")
+    # Where the station is, in decimal degrees (south and west are negative).
+    # Only used to work out sunrise and sunset so the chart can shade the
+    # night; left unset, the dashboard simply doesn't shade it.
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    @field_validator("sensor_id_filter", "latitude", "longitude", mode="before")
     @classmethod
-    def _blank_sensor_id_is_none(cls, value: object) -> object:
+    def _blank_is_none(cls, value: object) -> object:
         # An unset .env value still arrives as "" rather than being absent,
-        # which int | None otherwise rejects instead of treating as None.
+        # which a number-or-None field otherwise rejects instead of treating as None.
         if isinstance(value, str) and value.strip() == "":
             return None
         return value
-
-    @property
-    def database_dir(self) -> Path:
-        return Path(self.database_path).parent
 
     @property
     def cors_origin_list(self) -> list[str]:

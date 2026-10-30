@@ -2,16 +2,11 @@ import { Download, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 
 import { buildExportUrl } from "../api/client";
-
-function isoDaysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
-}
+import { localDateInputValue } from "../dates";
 
 export function ExportPanel() {
-  const [start, setStart] = useState(isoDaysAgo(7));
-  const [end, setEnd] = useState(isoDaysAgo(0));
+  const [start, setStart] = useState(localDateInputValue(7));
+  const [end, setEnd] = useState(localDateInputValue(0));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
