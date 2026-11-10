@@ -278,6 +278,19 @@ The sensor reports a lifetime rain counter. Each reading also stores
 The raw counter value is never overwritten: it stays in `raw_payload` and in
 `rain_mm`.
 
+If the station stops recording for a while (say the dongle drops out) the sensor
+keeps counting rain, and the running total jumps on the first reading back. That
+rain is credited to the period the first reading back falls in, so a downpour
+during an outage still shows up on that day's bar and in the 24 h and Today
+figures; the exact time it fell is unknown. "Raining now" and the last-hour
+figures ignore that jump, so they never claim it fell just now.
+
+Records skips lone noise readings: a value that differs from the nearest readings
+on both sides of it by more than the weather could have changed in that time
+(8 °C between back-to-back readings, plus 5 °C for each hour between them up to
+25 °C; or 100 km/h for a gust) never counts as a record. Those readings stay in the
+database; they just can't win.
+
 ### Automatic rain repair
 
 Older versions could be fooled by a glitched rain reading (the counter briefly

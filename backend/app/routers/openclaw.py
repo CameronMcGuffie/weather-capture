@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -23,6 +24,7 @@ from app.readings import (
     as_utc,
     bucket_rain,
     compass_point,
+    counts_outage_rain,
     dew_point_c,
     feels_like_c,
     rain_total,
@@ -72,6 +74,8 @@ _NOTES = [
     "All timestamps are UTC (ISO 8601). Convert to the person's local time before quoting a time to them.",
     "rain_mm in a window or series bucket is the rain that FELL during that period. "
     "rain_since_tracking_began_mm is a lifetime total since the first stored reading, not a daily figure.",
+    "Rain that fell while the station was offline is counted in the period holding the first reading after "
+    "the gap (windows of 1h or less leave it out), so after a gap in readings its timing is uncertain.",
     "wind_from_deg / wind_from give the direction the wind comes FROM (meteorological convention): "
     "a west wind is 270 / 'W'. Over a window it is the prevailing direction, not a simple average.",
     "If station.is_stale is true or reading_age_seconds is large, the 'current' values are out of date; say so.",
@@ -114,7 +118,7 @@ def _parse_fields(spec: str | None) -> set[str]:
     return selected
 
 
-def _stat(row: aiosqlite.Row, prefix: str, digits: int) -> Stat:
+def _stat(row: Mapping[str, Any], prefix: str, digits: int) -> Stat:
     return Stat(
         min=round_or_none(row[f"{prefix}_min"], digits),
         max=round_or_none(row[f"{prefix}_max"], digits),
@@ -122,7 +126,7 @@ def _stat(row: aiosqlite.Row, prefix: str, digits: int) -> Stat:
     )
 
 
-def _build_window(label: str, hours: int, start: datetime, end: datetime, row: aiosqlite.Row) -> OpenClawWindow:
+def _build_window(label: str, hours: int, start: datetime, end: datetime, row: Mapping[str, Any]) -> OpenClawWindow:
     rain_mm: float | None = None
     if row["rain_first_mm"] is not None and row["rain_last_mm"] is not None:
         # The reset-aware total only ever climbs, so last minus first is the
@@ -212,7 +216,8 @@ async def get_snapshot(
     window_stats = []
     for label, hours in parsed:
         start = now - timedelta(hours=hours)
-        window_stats.append(_build_window(label, hours, start, now, await database.fetch_window_stats(start, now)))
+        stats = await database.fetch_window_stats(start, now, carry_in=counts_outage_rain(hours))
+        window_stats.append(_build_window(label, hours, start, now, stats))
 
     return OpenClawSnapshot(
         generated_at=now,
@@ -326,7 +331,7 @@ async def get_series(
     else:
         rows = await database.fetch_daily_aggregates(window_start, window_end, utc_offset_minutes)
 
-    rain = bucket_rain(rows)
+    rain = bucket_rain(rows, await database.fetch_rain_total_before(window_start))
     points = [_build_point(row, rain[index], selected) for index, row in enumerate(rows)]
     return OpenClawSeries(
         start=window_start,

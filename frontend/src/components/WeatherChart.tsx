@@ -281,9 +281,11 @@ export function WeatherChart() {
     }
 
     if (metric === "rain_mm") {
-      // Rain is cumulative, so the amount that fell inside the window is
-      // the difference between its last and first values.
-      return { kind: "rain" as const, total: Math.max(...values) - Math.min(...values) };
+      // Rain is cumulative and the server counts it from zero at the start
+      // of the window, so the amount that fell is simply how high it got.
+      // (Subtracting the first value would drop rain already in it: what
+      // fell in the first bucket, or while the station was offline.)
+      return { kind: "rain" as const, total: Math.max(...values) };
     }
 
     const lows = points

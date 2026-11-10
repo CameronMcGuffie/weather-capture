@@ -51,8 +51,8 @@ def _parse_stamp(value: str) -> datetime:
     return as_utc(datetime.fromisoformat(value))
 
 
-async def _rain_between(database: Database, start: datetime, end: datetime) -> float | None:
-    row = await database.fetch_window_stats(start, end)
+async def _rain_between(database: Database, start: datetime, end: datetime, *, carry_in: bool = False) -> float | None:
+    row = await database.fetch_window_stats(start, end, carry_in=carry_in)
     if row["rain_first_mm"] is None or row["rain_last_mm"] is None:
         return None
     return round_or_none(row["rain_last_mm"] - row["rain_first_mm"], 2)
@@ -122,7 +122,7 @@ async def get_rain_bars(
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
     rows = await database.fetch_rain_buckets(start, end, daily=bucket == "day", utc_offset_minutes=utc_offset_minutes)
-    rain = bucket_rain(rows)
+    rain = bucket_rain(rows, await database.fetch_rain_total_before(start))
     return RainBarsResponse(
         start=start,
         end=end,
@@ -195,8 +195,6 @@ async def get_period(
         chosen = (min if pick == "min" else max)(candidates, key=lambda row: row[field])
         return PeriodExtreme(value=round(chosen[field], digits), at=_parse_stamp(chosen["bucket"]))
 
-    lows = [row["rain_min_mm"] for row in rows if row["rain_min_mm"] is not None]
-    highs = [row["rain_max_mm"] for row in rows if row["rain_max_mm"] is not None]
     return PeriodResponse(
         start=start,
         end=end,
@@ -204,7 +202,10 @@ async def get_period(
         temperature_c_min=extreme("temperature_c_min", "min", 1),
         temperature_c_max=extreme("temperature_c_max", "max", 1),
         wind_gust_max_km_h=extreme("wind_max_km_h", "max", 1),
-        rain_mm=round_or_none(max(highs) - min(lows), 2) if lows and highs else None,
+        # Counted from the last reading before the period, so rain that fell
+        # while the station was offline is credited to the period its next
+        # reading is in.
+        rain_mm=await _rain_between(database, start, end, carry_in=True),
     )
 
 

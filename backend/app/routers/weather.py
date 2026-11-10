@@ -13,7 +13,17 @@ from fastapi.responses import StreamingResponse
 
 from app.database import Database
 from app.dependencies import get_database
-from app.readings import adjust_rain, as_utc, compass_point, dew_point_c, feels_like_c, rain_total, round_or_none, wind_direction
+from app.readings import (
+    adjust_rain,
+    as_utc,
+    compass_point,
+    counts_outage_rain,
+    dew_point_c,
+    feels_like_c,
+    rain_total,
+    round_or_none,
+    wind_direction,
+)
 from app.schemas import HistoryPoint, HistoryResponse, HomeAssistantPayload, LatestReading, WindowSummary
 
 router = APIRouter(prefix="/api", tags=["weather"])
@@ -121,7 +131,14 @@ async def get_history(
     # lifetime total that old rain keeps propping up forever. The first
     # bucket's minimum is used (not its maximum) so rain that fell inside
     # that first bucket isn't dropped.
-    rain_baseline = next((row["rain_min_mm"] for row in rows if row["rain_min_mm"] is not None), None)
+    # When there was a reading before the window, that is the baseline instead,
+    # so rain that fell while the station was offline shows up when it returns
+    # (except on a chart of the last hour or less, like the last-hour figures).
+    rain_baseline: float | None = None
+    if counts_outage_rain((span_end - span_start) / timedelta(hours=1)):
+        rain_baseline = await database.fetch_rain_total_before(span_start)
+    if rain_baseline is None:
+        rain_baseline = next((row["rain_min_mm"] for row in rows if row["rain_min_mm"] is not None), None)
 
     points = [_build_history_point(row, rain_baseline) for row in rows]
     return HistoryResponse(resolution=resolution, start=span_start, end=span_end, points=points)
@@ -134,7 +151,7 @@ async def get_window_summary(
 ) -> WindowSummary:
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
-    row = await database.fetch_window_stats(start, end)
+    row = await database.fetch_window_stats(start, end, carry_in=counts_outage_rain(hours))
 
     rain_mm: float | None = None
     if row["rain_first_mm"] is not None and row["rain_last_mm"] is not None:
@@ -192,8 +209,8 @@ async def export_csv(
     )
 
 
-async def _rain_in_last(database: Database, now: datetime, span: timedelta) -> float | None:
-    row = await database.fetch_window_stats(now - span, now)
+async def _rain_in_last(database: Database, now: datetime, span: timedelta, *, carry_in: bool = False) -> float | None:
+    row = await database.fetch_window_stats(now - span, now, carry_in=carry_in)
     if row["rain_first_mm"] is None or row["rain_last_mm"] is None:
         return None
     return round_or_none(row["rain_last_mm"] - row["rain_first_mm"], 2)
@@ -228,6 +245,6 @@ async def get_home_assistant_payload(database: Database = Depends(get_database))
             else None
         ),
         rain_last_hour_mm=await _rain_in_last(database, now, timedelta(hours=1)),
-        rain_24h_mm=await _rain_in_last(database, now, timedelta(hours=24)),
+        rain_24h_mm=await _rain_in_last(database, now, timedelta(hours=24), carry_in=True),
         reading_age_seconds=max(0, int((now - observed_at).total_seconds())),
     )

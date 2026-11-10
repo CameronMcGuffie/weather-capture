@@ -83,14 +83,25 @@ def feels_like_c(temperature_c: float, humidity: float, wind_km_h: float) -> flo
     return temperature_c + 0.33 * vapour_pressure - 0.70 * (wind_km_h / 3.6) - 4.00
 
 
-def bucket_rain(rows: Sequence[aiosqlite.Row]) -> list[float | None]:
+def counts_outage_rain(hours: float) -> bool:
+    """Whether a look-back window of this length counts rain from before its
+    first reading. Rain that fell while the station was offline arrives as
+    one jump on the first reading back: longer windows count it so it isn't
+    lost, but the last hour or less doesn't, since that would say it fell
+    just now."""
+    return hours > 1
+
+
+def bucket_rain(rows: Sequence[aiosqlite.Row], carry_in: float | None = None) -> list[float | None]:
     """Rain that fell in each bucket. The total is cumulative, so a bucket's
     rain is how far the total rose since the end of the previous bucket
     (carried across empty buckets, so overnight rain between two sparse
-    readings still lands somewhere); the first bucket uses its own spread.
+    readings still lands somewhere). The first bucket starts from `carry_in`,
+    the total at the last reading before the window, or from its own spread
+    when there isn't one.
     """
     rain: list[float | None] = []
-    previous_high: float | None = None
+    previous_high: float | None = carry_in
     for row in rows:
         high = row["rain_max_mm"]
         if high is None:

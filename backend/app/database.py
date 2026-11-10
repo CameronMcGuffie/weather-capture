@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -137,6 +137,21 @@ _EXTREME_FIELDS = {
     "temperature_c": "json_extract(decoded_data, '$.temperature_c')",
     "wind_max_km_h": "json_extract(decoded_data, '$.wind_max_km_h')",
 }
+# Stray 433MHz noise sometimes decodes as a valid frame full of wild values.
+# Such a reading is a single point that disagrees with the readings on both
+# sides of it by more than the weather can change in the time between them,
+# so it never counts as a record. (The readings themselves are kept untouched.)
+# Per field: (the most two back-to-back readings can differ, how much more is
+# allowed for each hour between them, the most allowed however far apart).
+# A gust says nothing about the next gust however close together they are,
+# so its limit doesn't grow.
+_EXTREME_MAX_JUMP = {"temperature_c": (8.0, 5.0, 25.0), "wind_max_km_h": (100.0, 0.0, 100.0)}
+_EXTREME_CANDIDATES = 200
+
+
+def _hours_apart(first: str, second: str) -> float:
+    gap = as_utc(datetime.fromisoformat(first)) - as_utc(datetime.fromisoformat(second))
+    return abs(gap.total_seconds()) / 3600.0
 
 
 class Database:
@@ -254,12 +269,33 @@ class Database:
         )
         return await cursor.fetchall()
 
-    async def fetch_window_stats(self, start: datetime, end: datetime) -> aiosqlite.Row:
-        """Extremes, averages and rain accumulation across a whole window."""
+    async def fetch_window_stats(self, start: datetime, end: datetime, *, carry_in: bool = False) -> Mapping[str, Any]:
+        """Extremes, averages and rain accumulation across a whole window.
+
+        With `carry_in`, rain is counted from the last reading before the
+        window, so rain that fell while the station wasn't recording (and
+        showed up as one jump on the first reading back) lands in the window
+        that reading belongs to instead of being lost.
+        """
         cursor = await self.connection.execute(_WINDOW_STATS_QUERY, (_bound(start), _bound(end)))
         row = await cursor.fetchone()
         assert row is not None  # aggregates always return one row
-        return row
+        stats = dict(row)
+        if carry_in:
+            before = await self.fetch_rain_total_before(start)
+            if before is not None and stats["rain_last_mm"] is not None:
+                stats["rain_first_mm"] = min(before, stats["rain_last_mm"])
+        return stats
+
+    async def fetch_rain_total_before(self, start: datetime) -> float | None:
+        """The running rain total at the last reading before `start`."""
+        cursor = await self.connection.execute(
+            f"SELECT {_RAIN_TOTAL_EXPR} AS total FROM weather_readings "
+            f"WHERE timestamp < ? AND {_RAIN_TOTAL_EXPR} IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
+            (_bound(start),),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else float(row["total"])
 
     async def fetch_rain_buckets(
         self, start: datetime, end: datetime, *, daily: bool, utc_offset_minutes: int = 0
@@ -309,17 +345,40 @@ class Database:
         assert totals is not None
         return cells, totals
 
-    async def fetch_extreme(self, field: str, aggregate: str) -> aiosqlite.Row:
-        """The highest or lowest value ever recorded, and when. SQLite fills a
-        bare column from the row that holds the single MIN/MAX in the query."""
+    async def fetch_extreme(self, field: str, aggregate: str) -> Mapping[str, Any]:
+        """The highest or lowest value ever recorded, and when, ignoring lone
+        spikes (see _EXTREME_MAX_JUMP). Candidates are taken best first and
+        each is checked against the nearest reading either side of it that
+        has a value, so only a handful of rows are ever compared. A candidate
+        stands if either neighbour backs it up, or if it's the only reading."""
         if field not in _EXTREME_FIELDS or aggregate not in ("MIN", "MAX"):
             raise ValueError("unsupported extreme")
+        expr = _EXTREME_FIELDS[field]
+        order = "DESC" if aggregate == "MAX" else "ASC"
+        max_jump, extra_per_hour, ceiling = _EXTREME_MAX_JUMP[field]
         cursor = await self.connection.execute(
-            f"SELECT {aggregate}({_EXTREME_FIELDS[field]}) AS value, timestamp FROM weather_readings"
+            f"SELECT timestamp, value FROM (SELECT timestamp, {expr} AS value FROM weather_readings) "
+            f"WHERE value IS NOT NULL ORDER BY value {order}, timestamp LIMIT {_EXTREME_CANDIDATES}"
         )
-        row = await cursor.fetchone()
-        assert row is not None
-        return row
+        candidates = await cursor.fetchall()
+        for candidate in candidates:
+            neighbours = []
+            for comparison, direction in (("<", "DESC"), (">", "ASC")):
+                cursor = await self.connection.execute(
+                    f"SELECT timestamp, {expr} AS value FROM weather_readings "
+                    f"WHERE timestamp {comparison} ? AND {expr} IS NOT NULL ORDER BY timestamp {direction} LIMIT 1",
+                    (candidate["timestamp"],),
+                )
+                row = await cursor.fetchone()
+                if row is not None:
+                    neighbours.append(row)
+            if not neighbours or any(
+                abs(candidate["value"] - neighbour["value"])
+                <= min(max_jump + extra_per_hour * _hours_apart(candidate["timestamp"], neighbour["timestamp"]), ceiling)
+                for neighbour in neighbours
+            ):
+                return {"value": candidate["value"], "timestamp": candidate["timestamp"]}
+        return {"value": None, "timestamp": None}
 
     async def fetch_first_reading_timestamp(self) -> str | None:
         cursor = await self.connection.execute("SELECT MIN(timestamp) AS timestamp FROM weather_readings")
